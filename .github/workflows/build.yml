@@ -5,6 +5,9 @@ on:
       version:
         description: "Tag version to release"
         required: true
+      previous_version:
+        description: "Previous tag for the changelog (optional; auto-detected if empty)"
+        required: false
   push:
     paths-ignore:
       - "docs/**"
@@ -248,12 +251,12 @@ jobs:
         go env
         go build -v -tags "with_gvisor" -trimpath -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid="
         if [ "${{matrix.jobs.goos}}" = "windows" ]; then
-          cp mihomo.exe mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
-          zip -r mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.zip mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
+          cp mihomo.exe prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
+          zip -r prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.zip prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
         else
-          cp mihomo mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
-          gzip -c mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}} > mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.gz
-          rm mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
+          cp mihomo prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
+          gzip -c prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}} > prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.gz
+          rm prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
         fi
 
     - name: Package DEB
@@ -265,7 +268,7 @@ jobs:
 
         fpm -t deb \
           -v "${PackageVersion}" \
-          -p "mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.deb" \
+          -p "prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.deb" \
           --architecture ${{ matrix.jobs.debian }} \
           mihomo=/usr/bin/mihomo
 
@@ -278,7 +281,7 @@ jobs:
 
         fpm -t rpm \
           -v "${PackageVersion}" \
-          -p "mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.rpm" \
+          -p "prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.rpm" \
           --architecture ${{ matrix.jobs.rpm }} \
           mihomo=/usr/bin/mihomo
 
@@ -292,7 +295,7 @@ jobs:
 
         fpm -t pacman \
           -v "${PackageVersion}" \
-          -p "mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.pkg.tar.zst" \
+          -p "prizrak-core-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.pkg.tar.zst" \
           --architecture ${{ matrix.jobs.pacman }} \
           mihomo=/usr/bin/mihomo
 
@@ -321,11 +324,11 @@ jobs:
       with:
         name: "${{ matrix.jobs.goos }}-${{ matrix.jobs.output }}"
         path: |
-          mihomo*.gz
-          mihomo*.deb
-          mihomo*.rpm
-          mihomo*.pkg.tar.zst
-          mihomo*.zip
+          prizrak-core*.gz
+          prizrak-core*.deb
+          prizrak-core*.rpm
+          prizrak-core*.pkg.tar.zst
+          prizrak-core*.zip
           toolchain.tar.gz
           vendor.tar.gz
           version.txt
@@ -370,18 +373,10 @@ jobs:
       
     - run: |
         cat > release.txt << 'EOF'
-        **[声明]** 本分支是在上游代码的基础上增加Smart策略组功能，关于Smart策略组的任何问题均与上游无关!
-        **[Announcement]** This branch is based on the upstream code to add Smart Groups functionality, any questions about Smart Groups are not related to the upstream!
+        **Prizrak-Core** — a mihomo (Clash.Meta) core build for Prizrak-Box.
 
-        Release created at  ${{ env.BUILDTIME }}
-        Synchronize ${{ github.ref_name }} branch code updates, keeping only the latest version
-        <br>
-        [我应该下载哪个文件? / Which file should I download?](https://github.com/MetaCubeX/mihomo/wiki/FAQ)
-        [二进制文件筛选 / Binary file selector](https://metacubex.github.io/Meta-Docs/startup/#_1)
-        [查看文档 / Docs](https://metacubex.github.io/Meta-Docs/)
-
-        [Smart 策略组使用 / Smart Group Introduce](https://github.com/vernesong/OpenClash/releases/tag/mihomo)
-
+        Rolling prerelease for branch `${{ github.ref_name }}`; only the latest build is kept.
+        Built at ${{ env.BUILDTIME }}
         EOF
 
     - name: Upload Prerelease
@@ -405,28 +400,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: Meta
+          ref: ${{ github.ref_name }}
           fetch-depth: '0'
           fetch-tags: 'true'
 
       - name: Get tags
         run: |
           echo "CURRENTVERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
-          git fetch --tags
-          echo "PREVERSION=$(git describe --tags --abbrev=0 HEAD)" >> $GITHUB_ENV
+          git fetch --tags --force
+          if [ -n "${{ github.event.inputs.previous_version }}" ]; then
+            PREV="${{ github.event.inputs.previous_version }}"
+          else
+            PREV="$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)"
+          fi
+          if [ -z "$PREV" ]; then
+            PREV="$(git rev-list --max-parents=0 HEAD | tail -n1)"
+          fi
+          echo "PREVERSION=$PREV" >> $GITHUB_ENV
 
-      - name: Force push Alpha branch to Meta
+      - name: Tag the release commit
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
-          git fetch origin Alpha:Alpha
-          git push origin Alpha:Meta --force
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Tag the commit on Alpha
-        run: |
-          git checkout Alpha 
           git tag ${{ github.event.inputs.version }}
           git push origin ${{ github.event.inputs.version }}
         env:
