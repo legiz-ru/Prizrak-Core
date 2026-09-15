@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/metacubex/mihomo/common/contextutils"
+
 	"github.com/metacubex/sing/common/auth"
 	M "github.com/metacubex/sing/common/metadata"
 	N "github.com/metacubex/sing/common/network"
@@ -139,7 +141,7 @@ func (r *ServerRuntime) attachXUDP(
 	}
 	flow := r.flows[key]
 	if flow == nil {
-		flowContext, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+		flowContext, cancel := context.WithCancelCause(contextutils.WithoutCancel(ctx))
 		flow = newServerPacketFlow(r, key, flowContext, cancel, carrier.handler, carrier.metadata.Source, destination, true)
 		r.flows[key] = flow
 		r.wg.Add(1)
