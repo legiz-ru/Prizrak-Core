@@ -183,6 +183,7 @@ func TestServerRuntimeRejectsDuplicateSessionIDBeforeDispatch(t *testing.T) {
 	t.Cleanup(func() { _ = runtime.Close() })
 	var calls atomic.Int32
 	release := make(chan struct{})
+	defer close(release)
 	started := make(chan struct{}, 2)
 	handler := testServerHandler{
 		tcp: func(_ context.Context, conn net.Conn, _ M.Metadata) error {
@@ -206,7 +207,6 @@ func TestServerRuntimeRejectsDuplicateSessionIDBeforeDispatch(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("dispatch calls = %d, want 1", got)
 	}
-	close(release)
 }
 
 func TestServerRuntimeEnforcesPerCarrierSessionLimit(t *testing.T) {
@@ -214,6 +214,7 @@ func TestServerRuntimeEnforcesPerCarrierSessionLimit(t *testing.T) {
 	t.Cleanup(func() { _ = runtime.Close() })
 	var calls atomic.Int32
 	release := make(chan struct{})
+	defer close(release)
 	started := make(chan struct{}, 2)
 	handler := testServerHandler{
 		tcp: func(_ context.Context, conn net.Conn, _ M.Metadata) error {
@@ -235,7 +236,6 @@ func TestServerRuntimeEnforcesPerCarrierSessionLimit(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("dispatch calls = %d, want 1", got)
 	}
-	close(release)
 }
 
 func TestServerRuntimePreservesUDPPacketsAndTargets(t *testing.T) {
@@ -382,10 +382,13 @@ func TestServerRuntimeRejectsXUDPTargetMismatchWithoutReplacingFlow(t *testing.T
 	t.Cleanup(func() { _ = runtime.Close() })
 	var calls atomic.Int32
 	release := make(chan struct{})
+	defer close(release)
+	started := make(chan struct{}, 1)
 	handler := testServerHandler{
 		tcp: func(context.Context, net.Conn, M.Metadata) error { return errors.New("unexpected TCP") },
 		udp: func(_ context.Context, conn N.PacketConn, _ M.Metadata) error {
 			calls.Add(1)
+			started <- struct{}{}
 			packet := buf.NewSize(MaxPayloadSize)
 			defer packet.Release()
 			_, err := conn.ReadPacket(packet)
@@ -402,6 +405,9 @@ func TestServerRuntimeRejectsXUDPTargetMismatchWithoutReplacingFlow(t *testing.T
 		SessionID: 1, Status: StatusNew, Option: OptionData, Network: NetworkUDP,
 		Destination: "first.example", Port: 53, GlobalID: globalID, Payload: []byte("one"),
 	})
+	// Wait for session 1 to be dispatched before racing session 2 and the
+	// calls assertion, otherwise calls may still be 0 under load.
+	<-started
 	writeTestFrame(t, first, Frame{SessionID: 1, Status: StatusEnd})
 
 	second := serveTestCarrier(t, runtime, handler)
@@ -416,7 +422,6 @@ func TestServerRuntimeRejectsXUDPTargetMismatchWithoutReplacingFlow(t *testing.T
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("XUDP dispatch calls = %d, want 1", got)
 	}
-	close(release)
 }
 
 func TestServerRuntimeIsolatesXUDPFlowsByAuthenticatedUser(t *testing.T) {
@@ -424,6 +429,7 @@ func TestServerRuntimeIsolatesXUDPFlowsByAuthenticatedUser(t *testing.T) {
 	t.Cleanup(func() { _ = runtime.Close() })
 	var calls atomic.Int32
 	release := make(chan struct{})
+	defer close(release)
 	handler := testServerHandler{
 		tcp: func(context.Context, net.Conn, M.Metadata) error { return errors.New("unexpected TCP") },
 		udp: func(_ context.Context, conn N.PacketConn, _ M.Metadata) error {
@@ -457,7 +463,6 @@ func TestServerRuntimeIsolatesXUDPFlowsByAuthenticatedUser(t *testing.T) {
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("XUDP dispatch calls = %d, want 2", got)
 	}
-	close(release)
 }
 
 func TestServerRuntimeIgnoresStaleXUDPExpiryAfterRebind(t *testing.T) {
