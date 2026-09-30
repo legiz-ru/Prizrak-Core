@@ -87,8 +87,8 @@ github.com/klauspost/reedsolomon v1.12.3 h1:tzUznbfc3OFwJaTebv/QdhnFf2Xvb7gZ24Xa
 github.com/klauspost/reedsolomon v1.12.3/go.mod h1:3K5rXwABAvzGeR01r6pWZieUALXO/Tq7bFKGIb4m4WI=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
-github.com/legiz-ru/prizrak-http v0.0.0-20260926183116-34b73fbddb13 h1:TrgA1bWT94X92/Jf7fZNZw+SaIzGunoF0wviMMVyuM8=
-github.com/legiz-ru/prizrak-http v0.0.0-20260926183116-34b73fbddb13/go.mod h1:Nxx0zZAo2AhRfanyL+fmmK6ACMtVsfpwIl1aFAik2Eg=
+github.com/legiz-ru/prizrak-http v0.0.0-20260930180911-da5b4c1e0882 h1:f47FEoQ3NBiQf344nnwkeODgEAOwtQbb7UiaD62JXKA=
+github.com/legiz-ru/prizrak-http v0.0.0-20260930180911-da5b4c1e0882/go.mod h1:Nxx0zZAo2AhRfanyL+fmmK6ACMtVsfpwIl1aFAik2Eg=
 github.com/legiz-ru/prizrak-utls v0.0.0-20260910220934-80ad70380fe8 h1:79KkQaijBeeUMYs375JTIBfoL9RwYpV9sCyGTsz+hkM=
 github.com/legiz-ru/prizrak-utls v0.0.0-20260910220934-80ad70380fe8/go.mod h1:fCleWyTleu20o1ixVRIesy+fZjG14LmO7YwwSMPe560=
 github.com/mdlayher/netlink v1.7.2 h1:/UtM3ofJap7Vl4QWCPDGXY8d3GIY2UGSDbK+QWmY8/g=
