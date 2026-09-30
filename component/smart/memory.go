@@ -26,9 +26,8 @@ var (
 )
 
 var (
-	targetCacheRefreshFlags    xsync.Map[string, bool]
-	dbResultRefreshFlags       xsync.Map[string, bool]
-	blockedNodesRefreshFlags   xsync.Map[string, bool]
+	dbResultRefreshFlags     xsync.Map[string, bool]
+	blockedNodesRefreshFlags xsync.Map[string, bool]
 )
 
 type (
@@ -50,8 +49,6 @@ type (
 	PrefetchMap struct {
 		TCP         NodesWithWeights `json:"tcp,omitempty"`
 		UDP         NodesWithWeights `json:"udp,omitempty"`
-		RefTCP      string           `json:"ref_tcp,omitempty"`
-		RefUDP      string           `json:"ref_udp,omitempty"`
 		UpdatedTime int64            `json:"updated_time,omitempty"`
 	}
 )
@@ -105,13 +102,12 @@ func InitCache() {
 }
 
 // 存储预取结果
-func (s *Store) StorePrefetchResult(group, config string, target string, asnNumber string, isUDP bool, proxyNames []string, weights []float64) {
+func (s *Store) StorePrefetchResult(group, config string, target string, isUDP bool, proxyNames []string, weights []float64) {
 	if target == "" || len(proxyNames) == 0 {
 		return
 	}
 
 	var pm PrefetchMap
-	operations := make([]StoreOperation, 0, 2)
 	nodeWeight := NodesWithWeights{Nodes: proxyNames, Weights: weights}
 
 	if isUDP {
@@ -122,45 +118,21 @@ func (s *Store) StorePrefetchResult(group, config string, target string, asnNumb
 	pm.UpdatedTime = time.Now().Unix()
 
 	data, err := json.Marshal(pm)
-	if err == nil {
-		operations = append(operations, StoreOperation{
-			Type:   OpSavePrefetch,
-			Group:  group,
-			Config: config,
-			Target: target,
-			Data:   data,
-		})
+	if err != nil {
+		return
 	}
 
-	if asnNumber != "" && !CdnASNs[asnNumber] {
-		targetCacheKey := FormatDBKey(KeyTypePrefetch, config, group, target)
-		var asnPm PrefetchMap
-		if isUDP {
-			asnPm.RefUDP = targetCacheKey
-		} else {
-			asnPm.RefTCP = targetCacheKey
-		}
-		asnPm.UpdatedTime = time.Now().Unix()
-		
-		asnData, asnErr := json.Marshal(asnPm)
-		if asnErr == nil {
-			operations = append(operations, StoreOperation{
-				Type:   OpSavePrefetch,
-				Group:  group,
-				Config: config,
-				Target: asnNumber,
-				Data:   asnData,
-			})
-		}
-	}
-
-	if len(operations) > 0 {
-		s.AppendToGlobalQueue(operations...)
-	}
+	s.AppendToGlobalQueue(StoreOperation{
+		Type:   OpSavePrefetch,
+		Group:  group,
+		Config: config,
+		Target: target,
+		Data:   data,
+	})
 }
 
 // 获取预取结果
-func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber string, isUDP bool) ([]string, []float64) {
+func (s *Store) GetPrefetchResult(group, config string, target string, isUDP bool) ([]string, []float64) {
 	if target == "" {
 		return nil, nil
 	}
@@ -192,29 +164,6 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 		return nil, nil
 	}
 
-	// ASN
-	if asnNumber != "" && !CdnASNs[asnNumber] {
-		if pm, ok := loadPM(FormatDBKey(KeyTypePrefetch, config, group, asnNumber)); ok {
-			if nodes, weights := pick(pm); nodes != nil {
-				return nodes, weights
-			}
-			var refKey string
-			if isUDP {
-				refKey = pm.RefUDP
-			} else {
-				refKey = pm.RefTCP
-			}
-			if refKey != "" {
-				if refPm, ok := loadPM(refKey); ok {
-					if nodes, weights := pick(refPm); nodes != nil {
-						return nodes, weights
-					}
-				}
-			}
-		}
-	}
-
-	// target
 	if pm, ok := loadPM(FormatDBKey(KeyTypePrefetch, config, group, target)); ok {
 		if nodes, weights := pick(pm); nodes != nil {
 			return nodes, weights
@@ -224,7 +173,7 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 	return nil, nil
 }
 
-func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber string, wildcardTarget string, proxies []C.Proxy) {
+func (s *Store) StoreUnwrapResult(group, config string, target string, proxies []C.Proxy) {
 	if target == "" || len(proxies) == 0 {
 		return
 	}
@@ -234,33 +183,15 @@ func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber
 		names[i] = p.Name()
 	}
 
-	// SmartTarget (same ruleset = same node)
 	targetKey := FormatDBKey(config, group, target)
 	if existing, expireTime, found := unwrapCache.GetWithExpire(targetKey); !found || len(existing.Proxies) == 0 || expireTime.Before(time.Now()) {
 		unwrapCache.Set(targetKey, UnwrapMap{Proxies: names})
 	}
-
-	// ASN sharing (CDN excluded): first-writer-wins
-	if asnNumber != "" && !CdnASNs[asnNumber] {
-		asnKey := FormatDBKey(config, group, asnNumber)
-		if existing, _, found := unwrapCache.GetWithExpire(asnKey); !found || len(existing.Proxies) == 0 {
-			unwrapCache.Set(asnKey, UnwrapMap{Proxies: names})
-		}
-	}
 }
 
-func (s *Store) GetUnwrapResult(group, config, target, asnNumber string, wildcardTarget string) (proxies []string, expired bool) {
+func (s *Store) GetUnwrapResult(group, config, target string) (proxies []string, expired bool) {
 	if target == "" {
 		return nil, false
-	}
-
-	if asnNumber != "" && !CdnASNs[asnNumber] {
-		asnKey := FormatDBKey(config, group, asnNumber)
-		if value, expireTime, found := unwrapCache.GetWithExpire(asnKey); found {
-			if len(value.Proxies) > 0 {
-				return value.Proxies, expireTime.Before(time.Now())
-			}
-		}
 	}
 
 	targetKey := FormatDBKey(config, group, target)
@@ -273,18 +204,12 @@ func (s *Store) GetUnwrapResult(group, config, target, asnNumber string, wildcar
 	return nil, false
 }
 
-func (s *Store) DeleteUnwrapResult(group, config string, target string, asnNumber string, wildcardTarget string) {
+func (s *Store) DeleteUnwrapResult(group, config string, target string) {
 	if target == "" {
 		return
 	}
 
-	targetKey := FormatDBKey(config, group, target)
-	unwrapCache.Delete(targetKey)
-
-	if asnNumber != "" && !CdnASNs[asnNumber] {
-		asnKey := FormatDBKey(config, group, asnNumber)
-		unwrapCache.Delete(asnKey)
-	}
+	unwrapCache.Delete(FormatDBKey(config, group, target))
 }
 
 func (s *Store) UpdateBlockedNodesCache(group, config string, updates map[string]*NodeState) {
@@ -347,12 +272,12 @@ func (s *Store) AdjustCacheParameters() {
 		globalCacheParams.BatchSaveThreshold)
 
 	cacheSize := globalCacheParams.MaxTargets / 4
-	targetCache = lru.ResetLRU(targetCache, cacheSize, lru.WithAge[string, string](300), lru.WithStale[string, string](true))
-	unwrapCache = lru.ResetLRU(unwrapCache, cacheSize, lru.WithAge[string, UnwrapMap](600), lru.WithStale[string, UnwrapMap](true))
-	recordCache = lru.ResetLRU(recordCache, cacheSize, lru.WithAge[string, *AtomicStatsRecord](300), lru.WithStale[string, *AtomicStatsRecord](true))
-	dbResultCache = lru.ResetLRU(dbResultCache, cacheSize, lru.WithAge[string, map[string][]byte](300), lru.WithStale[string, map[string][]byte](true))
-	blockedNodesCache = lru.ResetLRU(blockedNodesCache, cacheSize, lru.WithAge[string, map[string]bool](300), lru.WithStale[string, map[string]bool](true))
-	hostStatusCache = lru.ResetLRU(hostStatusCache, cacheSize, lru.WithAge[string, *HostStatus](300), lru.WithStale[string, *HostStatus](true))
+	targetCache.SetMaxSize(cacheSize)
+	unwrapCache.SetMaxSize(cacheSize)
+	recordCache.SetMaxSize(cacheSize)
+	dbResultCache.SetMaxSize(cacheSize)
+	blockedNodesCache.SetMaxSize(cacheSize)
+	hostStatusCache.SetMaxSize(cacheSize)
 	go s.FlushQueue(true)
 }
 

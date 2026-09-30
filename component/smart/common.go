@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	OpSaveNodeState         = iota
+	OpSaveNodeState = iota
 	OpSaveStats
 	OpSavePrefetch
 	OpSaveRanking
@@ -27,40 +27,60 @@ const (
 )
 
 const (
-	KeyTypePrefetch         = "prefetch"
-	KeyTypeNode             = "node"
-	KeyTypeStats            = "stats"
-	KeyTypeRanking          = "ranking"
-	KeyTypeHostFailures     = "failures"
+	KeyTypePrefetch     = "prefetch"
+	KeyTypeNode         = "node"
+	KeyTypeStats        = "stats"
+	KeyTypeRanking      = "ranking"
+	KeyTypeHostFailures = "failures"
 
-	WeightTypeTCP           = "tcp"
-	WeightTypeUDP           = "udp"
-	WeightTypeTCPASN        = "tcp_asn"
-	WeightTypeUDPASN        = "udp_asn"
+	WeightTypeTCP = "tcp"
+	WeightTypeUDP = "udp"
 )
 
 const (
-	DefaultMinSampleCount   = 2
+	DefaultMinSampleCount = 2
 
-	MaxTargetsLimit         = 5000
-	MinTargetsLimit         = 500
-	MaxBatchThreshLimit     = 300
-	MinBatchThreshLimit     = 50
+	MaxTargetsLimit     = 5000
+	MinTargetsLimit     = 500
+	MaxBatchThreshLimit = 300
+	MinBatchThreshLimit = 50
+	maxScanPrealloc     = 4096
 
-	RecordExpiredTime       = 7 * 24 * time.Hour
+	RecordExpiredTime = 7 * 24 * time.Hour
 
-	HostFailureNodeTTL      = 24 * time.Hour
-	hostStatusRetryAfter    = 4 * time.Hour
+	HostFailureNodeTTL       = 24 * time.Hour
+	hostStatusRetryAfter     = 4 * time.Hour
+	hostStatusViewTTLSeconds = 30
 
-	AllowedWeight           = 0.4
+	probeMaxBlockTTL = 30 * time.Minute
 
-	RankMostUsed            = "MostUsed"
-	RankOccasional          = "OccasionalUsed"
-	RankRarelyUsed          = "RarelyUsed"
+	AllowedWeight = 0.4
+
+	RankMostUsed   = "MostUsed"
+	RankOccasional = "OccasionalUsed"
+	RankRarelyUsed = "RarelyUsed"
+)
+
+
+const (
+	BroadRuleCount    = 10000
+	BroadASNDiversity = 6
+	asnEvidencePrefix = "asn:"
+
+	ASNClaimMinKinds  = 2   // networks a service must span to claim without repeats
+	ASNClaimMinHits   = 4   // successes a single network service needs before it claims
+	ASNClaimAmbiguous = "-" // network two services were seen on, never used as key
+)
+
+const (
+	TargetKindNoRule   TargetKind = iota // no rule identity, the fallback target
+	TargetKindRuleName                   // rule set / geosite / geoip name, which may be provider defined
+	TargetKindService                    // the rule type itself is narrow
+	TargetKindBroad                      // collection of unrelated services, e.g. a region
 )
 
 var (
-	db *bbolt.DB
+	db               *bbolt.DB
 	bucketSmartStats = []byte("smart_stats")
 
 	globalOperationQueue atomic.TypedValue[[]StoreOperation]
@@ -73,7 +93,9 @@ var (
 	}
 )
 
-var CdnASNs = map[string]bool{
+// SharedASNs are networks that rent addresses to unrelated parties, so the ASN does
+// not identify a single service and must not be used as a service key.
+var SharedASNs = map[string]bool{
 	"13335":  true, // Cloudflare
 	"12222":  true, // Akamai
 	"16625":  true, // Akamai
@@ -98,17 +120,62 @@ var CdnASNs = map[string]bool{
 	"43317":  true, // CDNvideo
 	"43996":  true, // CDNsun
 	"33438":  true, // Edgio (Highwinds)
-	"396982": true, // Leaseweb CDN
-	"16276":  true, // OVH CDN
+	"396982": true, // Google Cloud Platform
+	"16276":  true, // OVH
 	"30081":  true, // CacheFly
 	"12389":  true, // Zenlayer
 	"37888":  true, // Alibaba CDN
 	"45090":  true, // Tencent CDN
 	"207143": true, // KeyCDN
+	"14061":  true, // DigitalOcean
+	"24940":  true, // Hetzner
+	"31898":  true, // Oracle Cloud
+	"36351":  true, // IBM Cloud (SoftLayer)
+	"14618":  true, // Amazon AES (AWS)
+	"45102":  true, // Alibaba Cloud
+	"132203": true, // Tencent Cloud
+	"55990":  true, // Huawei Cloud
+	"12876":  true, // Scaleway
+	"51167":  true, // Contabo
+	"197540": true, // Netcup
+	"20473":  true, // Vultr (Choopa)
+	"63949":  true, // Linode
+	"9009":   true, // Leaseweb
+	"60781":  true, // Leaseweb NL
+	"36236":  true, // NetActuate (anycast hosting)
+	"39572":  true, // DataWeb Global Group (hosting)
+	"400618": true, // Prime Security (JP IDC)
+	"4134":   true, // China Telecom
+	"4808":   true, // China Unicom
+	"4837":   true, // China Unicom (China169)
+}
+
+// broadSetNames are meta-rules-dat entries that collect unrelated services; an
+// "@<scope>" suffix only marks the scope of the same entry.
+var broadSetNames = map[string]bool{
+	"cn":           true,
+	"private":      true,
+	"gfw":          true,
+	"greatfire":    true,
+	"ads-all":      true,
+	"oc-cn-domain": true, // OpenClash generated CN domain collection
+	"china-domain": true,
+	"china-ip":     true,
+	"tor":          true,
+}
+
+var broadNamePrefixes = []string{"category-", "geolocation-", "tld-"}
+
+// sharedGeoIPPayloads are geoip entries of shared or non routable address space.
+var sharedGeoIPPayloads = map[string]bool{
+	"cloudflare": true,
+	"cloudfront": true,
+	"fastly":     true,
+	"private":    true,
 }
 
 type (
-	Store struct {}
+	Store struct{}
 
 	StoreOperation struct {
 		Type    int
@@ -120,6 +187,10 @@ type (
 		Data    []byte
 	}
 )
+
+// TargetKind classifies a target string: a collection of unrelated services, a
+// single service, or a rule entry name that only the counts can tell apart.
+type TargetKind int
 
 func NewStore(newdb *bbolt.DB) *Store {
 	db = newdb
@@ -188,6 +259,184 @@ func formatOperationKey(op *StoreOperation) string {
 	}
 }
 
+// ClassifyTargetName classifies a target by naming conventions. A name that matches
+// no convention is a rule name, NeedsASNKey decides it from counts and diversity.
+func ClassifyTargetName(target string) TargetKind {
+	kind, payload, ok := splitTarget(target)
+	if !ok {
+		return TargetKindNoRule
+	}
+
+	name, _, _ := strings.Cut(strings.ToLower(payload), "@")
+
+	switch kind {
+	case "GeoIP", "SrcGeoIP":
+		if isCountryCode(name) || sharedGeoIPPayloads[name] || broadSetNames[name] {
+			return TargetKindBroad
+		}
+		return TargetKindRuleName
+	case "RuleSet", "GeoSite":
+		if broadSetNames[name] {
+			return TargetKindBroad
+		}
+		for _, prefix := range broadNamePrefixes {
+			if strings.HasPrefix(name, prefix) {
+				return TargetKindBroad
+			}
+		}
+		if asn, ok := asnRuleSetName(name); ok && SharedASNs[asn] {
+			return TargetKindBroad
+		}
+		return TargetKindRuleName
+	default:
+		return TargetKindService
+	}
+}
+
+// NeedsASNKey reports whether the ASN has to replace the target as key: always for a
+// collection or a target without rule identity, and for a provider defined name only
+// once its entry count or its number of unrelated networks proves it is a collection.
+func NeedsASNKey(target string, ruleCount, asnDiversity int) bool {
+	switch ClassifyTargetName(target) {
+	case TargetKindBroad, TargetKindNoRule:
+		return true
+	case TargetKindService:
+		return false
+	}
+	if ruleCount >= BroadRuleCount {
+		return true
+	}
+	return asnDiversity >= BroadASNDiversity
+}
+
+// RuleSetPayload returns the provider payload of a rule set target, the name its
+// entry count is looked up with.
+func RuleSetPayload(target string) (string, bool) {
+	kind, payload, ok := splitTarget(target)
+	if !ok {
+		return "", false
+	}
+	switch kind {
+	case "RuleSet", "GeoSite":
+		return payload, true
+	}
+	return "", false
+}
+
+func splitTarget(target string) (kind, payload string, ok bool) {
+	if target == "" {
+		return "", "", false
+	}
+	open := strings.LastIndex(target, " [")
+	if open <= 0 || !strings.HasSuffix(target, "]") {
+		return "", "", false
+	}
+	payload = target[open+2 : len(target)-1]
+	if payload == "" {
+		return "", "", false
+	}
+	return target[:open], payload, true
+}
+
+// IsRuleTarget reports whether a target carries rule identity (rule name or rule set).
+func IsRuleTarget(target string) bool {
+	_, _, ok := splitTarget(target)
+	return ok
+}
+
+func asnRuleSetName(name string) (string, bool) {
+	if len(name) < 3 || name[0] != 'a' || name[1] != 's' {
+		return "", false
+	}
+	digits := name[2:]
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return "", false
+		}
+	}
+	return digits, true
+}
+
+// SmartTargetKey folds a target into a service key when the group runs with prefer-asn. A
+// service rule keeps its rule string and a rule set covers every ASN it is served from,
+// otherwise the key is the ASN, or the site for a shared or unknown network.
+func SmartTargetKey(preferASN bool, asn, target, wildcardTarget, site string, needsASNKey bool) string {
+	if target == "" {
+		target = wildcardTarget
+	}
+	if target == "" {
+		return ""
+	}
+	if !preferASN {
+		return target
+	}
+	if !needsASNKey {
+		return target
+	}
+	if site != "" {
+		return site
+	}
+	if asn != "" && !SharedASNs[asn] {
+		return asn
+	}
+	if wildcardTarget != "" {
+		return wildcardTarget
+	}
+	return target
+}
+
+func isCountryCode(s string) bool {
+	if len(s) != 2 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// ClaimedASNRules maps every network to the service rule that owns it, from the
+// evidence collected per target. A network that two services were seen on is
+// reported as ambiguous, so it is never keyed to either of them.
+func ClaimedASNRules(evidence map[string]map[string]int) map[string]string {
+	type claim struct {
+		rule string
+		hits int
+	}
+
+	claims := make(map[string]claim)
+
+	for target, asns := range evidence {
+		if ClassifyTargetName(target) != TargetKindRuleName {
+			continue
+		}
+		singleNetwork := len(asns) < ASNClaimMinKinds
+		for asn, hits := range asns {
+			if singleNetwork && hits < ASNClaimMinHits {
+				continue
+			}
+			switch existing, ok := claims[asn]; {
+			case !ok:
+				claims[asn] = claim{rule: target, hits: hits}
+			case existing.rule == ASNClaimAmbiguous:
+			case existing.rule != target:
+				claims[asn] = claim{rule: ASNClaimAmbiguous, hits: existing.hits}
+			case hits > existing.hits:
+				claims[asn] = claim{rule: target, hits: hits}
+			}
+		}
+	}
+
+	result := make(map[string]string, len(claims))
+	for asn, c := range claims {
+		result[asn] = c.rule
+	}
+	return result
+}
+
 func isHexRandom(s string) bool {
 	if len(s) < 8 {
 		return false
@@ -222,15 +471,29 @@ func GetEffectiveTarget(host string, dstIP string) string {
 
 	h := strings.ToLower(host)
 
+	// the wildcard of a host never changes, a cached one needs no rewrite
+	if targetCache != nil {
+		if cached, _, ok := targetCache.GetWithExpire(h); ok && (strings.HasPrefix(cached, "*.") || cached == h) {
+			return cached
+		}
+	}
+
 	compute := func() string {
-		parts := strings.Split(h, ".")
-		reg, err := publicsuffix.EffectiveTLDPlusOne(h)
-		if err != nil || reg == "" || reg == h || !(h == reg || strings.HasSuffix(h, "."+reg)) {
-			if len(parts) >= 2 {
-				reg = strings.Join(parts[len(parts)-2:], ".")
-			} else {
+		reg := ""
+		if !strings.HasPrefix(h, ".") && !strings.HasSuffix(h, ".") && !strings.Contains(h, "..") {
+			suffix, _ := publicsuffix.PublicSuffix(h)
+			if len(h) > len(suffix) {
+				if cut := len(h) - len(suffix) - 1; h[cut] == '.' {
+					reg = h[1+strings.LastIndexByte(h[:cut], '.'):]
+				}
+			}
+		}
+		if reg == "" || reg == h || !(h == reg || strings.HasSuffix(h, "."+reg)) {
+			lastDot := strings.LastIndexByte(h, '.')
+			if lastDot < 0 {
 				return h
 			}
+			reg = h[strings.LastIndexByte(h[:lastDot], '.')+1:]
 		}
 
 		var sub string
@@ -244,8 +507,10 @@ func GetEffectiveTarget(host string, dstIP string) string {
 			return reg
 		}
 
-		labels := strings.Split(sub, ".")
-		last := labels[len(labels)-1]
+		last := sub
+		if dot := strings.LastIndexByte(sub, '.'); dot >= 0 {
+			last = sub[dot+1:]
+		}
 
 		if strings.Contains(last, "-") {
 			last = "*"
@@ -272,70 +537,31 @@ func GetEffectiveTarget(host string, dstIP string) string {
 			last = "*"
 		}
 
-		var normalizedSub string
-		if len(labels) == 1 {
-			normalizedSub = "*"
-		} else {
-			normalizedSub = "*." + last
-		}
-
-		if normalizedSub == "" || normalizedSub == "*" || normalizedSub == "*.*" {
+		if strings.IndexByte(sub, '.') < 0 || last == "*" {
 			return "*." + reg
 		}
 
-		return normalizedSub + "." + reg
+		return "*." + last + "." + reg
 	}
 
-	if targetCache != nil {
-		processResult := func(result string) string {
-			if result == "" {
-				return result
-			}
-			if strings.HasPrefix(result, "*.") {
-				targetCache.Set(result, result)
-				targetCache.Set(h, result)
-				return result
-			}
-			if result == h {
-				parts := strings.Split(h, ".")
-				if len(parts) == 2 {
-					wildcard := "*." + h
-					targetCache.Set(h, wildcard)
-					targetCache.Set(wildcard, wildcard)
-					return wildcard
-				}
-				if len(parts) > 2 {
-					wildcard := "*." + parts[len(parts)-2] + "." + parts[len(parts)-1]
-					if cachedVal, ok := targetCache.Get(wildcard); ok && cachedVal != "" {
-						targetCache.Set(h, cachedVal)
-						return cachedVal
-					}
-				}
-			}
-			targetCache.Set(h, result)
-			return result
-		}
-
-		if cachedResult, expireTime, ok := targetCache.GetWithExpire(h); ok {
-			isStale := expireTime.Before(time.Now())
-			finalResult := processResult(cachedResult)
-
-			if isStale {
-				if _, loading := targetCacheRefreshFlags.LoadOrStore(h, true); !loading {
-					go func() {
-						defer targetCacheRefreshFlags.Delete(h)
-						processResult(compute())
-					}()
-				}
-			}
-
-			return finalResult
-		}
-
-		return processResult(compute())
+	result := compute()
+	if targetCache == nil || result == "" {
+		return result
 	}
 
-	return compute()
+	if strings.HasPrefix(result, "*.") {
+		targetCache.Set(h, result)
+		return result
+	}
+
+	if result == h && strings.Count(h, ".") == 1 {
+		wildcard := "*." + h
+		targetCache.Set(h, wildcard)
+		return wildcard
+	}
+
+	targetCache.Set(h, result)
+	return result
 }
 
 // 时间衰减
@@ -448,7 +674,7 @@ func GetSystemMemoryUsage() float64 {
 	return 0.5
 }
 
-func InitQueue()  {
+func InitQueue() {
 	threshold := GetBatchSaveThreshold()
 	emptyQueue := make([]StoreOperation, 0, threshold)
 	replaceGlobalQueue(emptyQueue)

@@ -25,7 +25,6 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 		data []byte
 	}
 
-
 	var deleteKeys []string
 	deleteKeyIdx := make(map[string]int)
 
@@ -156,12 +155,17 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 	result := make(map[string][]byte)
 
 	globalCacheParams.mutex.RLock()
-	configMaxTargets := globalCacheParams.MaxTargets / 2
+	maxTargets := globalCacheParams.MaxTargets
 	globalCacheParams.mutex.RUnlock()
+
+	configMaxTargets := maxTargets / 2
 
 	depth := strings.Count(prefix, "/") + 1
 	if depth < 3 || !strings.HasPrefix(prefix, "smart/") {
 		return result, nil
+	}
+	if depth <= 4 && maxTargets > 1 {
+		configMaxTargets = maxTargets * 2
 	}
 	rest := prefix[6:] // skip "smart/"
 	var keyType, config, group, seg4, seg5 string
@@ -400,6 +404,9 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 	resultCap := 0
 	if maxResults > 0 {
 		resultCap = maxResults
+		if resultCap > maxScanPrealloc {
+			resultCap = maxScanPrealloc
+		}
 	}
 	result := make(map[string][]byte, resultCap)
 
@@ -436,7 +443,7 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 			return nil
 		}
 
-		reservoir = make([]kv, 0, maxResults)
+		reservoir = make([]kv, 0, resultCap)
 		for k, v := cursor.Seek(prefixBytes); k != nil && bytes.HasPrefix(k, prefixBytes); k, v = cursor.Next() {
 			if strict && len(k) > len(prefixBytes) && k[len(prefixBytes)] != '/' {
 				continue
@@ -463,6 +470,10 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 
 	if err != nil {
 		return nil, err
+	}
+
+	if maxResults > 0 && seen > maxResults {
+		log.Debugln("[SmartStore] Prefix [%s] scan hit the record limit: found [%d] records, kept [%d]...", prefix, seen, maxResults)
 	}
 
 	for _, item := range reservoir {

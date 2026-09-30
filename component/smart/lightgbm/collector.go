@@ -26,6 +26,7 @@ type DataCollector struct {
 	file                   *os.File
 	writer                 *csv.Writer
 	configured             bool
+	sizeLimited            bool
 	smartCollectorSize     int64
 	lastFileCheck          time.Time
 }
@@ -66,21 +67,28 @@ func (c *DataCollector) AddSample(input *smart.ModelInput, metadata *C.Metadata,
 		if _, err := os.Stat(c.dataPath); os.IsNotExist(err) {
 			log.Infoln("[Smart] Data file was deleted, reinitializing collector")
 			c.configured = false
+			c.sizeLimited = false
 			if c.file != nil {
 				c.file.Close()
 				c.file = nil
 			}
 			c.writer = nil
+		} else {
+			limitReached := c.sizeLimited
+			if !limitReached && c.file != nil {
+				if stat, err := c.file.Stat(); err == nil {
+					limitReached = stat.Size() > c.smartCollectorSize
+				}
+			}
+			if limitReached {
+				c.sizeLimited = true
+				log.Infoln("[Smart] Maximum file size limit reached (%d MB), stopping data collection", c.smartCollectorSize/(1024*1024))
+			}
 		}
 	}
 
-	// 检查文件大小限制
-	if c.file != nil {
-		stat, err := c.file.Stat()
-		if err == nil && stat.Size() > c.smartCollectorSize {
-			log.Infoln("[Smart] Maximum file size limit reached (%d MB), stopping data collection", c.smartCollectorSize/(1024*1024))
-			return
-		}
+	if c.sizeLimited {
+		return
 	}
 
 	if !c.configured {
@@ -164,7 +172,6 @@ func (c *DataCollector) AddSample(input *smart.ModelInput, metadata *C.Metadata,
 
 	c.sampleCount++
 
-	// 每100条记录刷新一次
 	if c.sampleCount%100 == 0 {
 		c.writer.Flush()
 	}

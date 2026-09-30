@@ -678,7 +678,7 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 
 				// set target for Smart gorup nodes selected
 				if smartRuleType(rule.RuleType()) {
-					if rule.RuleType().String() != "GEOIP" || !countryCodeRegex.MatchString(rule.Payload()) {
+					if rule.RuleType() != C.GEOIP || !countryCodeRegex.MatchString(rule.Payload()) {
 						metadata.SmartTarget = fmt.Sprintf("%s [%s]", rule.RuleType().String(), rule.Payload())
 					}
 				}
