@@ -1071,6 +1071,7 @@ proxies: # socks5
       # uplink-chunk-size: 0 # only applicable when uplink-data-placement is not body
       # sc-max-each-post-bytes: 1000000
       # sc-min-posts-interval-ms: 30
+      # h2-flow-control: false # h2 mode only: pace the server download by how fast the client reads, instead of letting it fill large HTTP/2 windows
       # reuse-settings: # aka XMUX
       #   max-concurrency: "16-32"
       #   max-connections: "0"
@@ -1084,6 +1085,7 @@ proxies: # socks5
       #   host: xxx.com
       #   headers:
       #     X-Forwarded-For: ""
+      #   h2-flow-control: false # inherits xhttp-opts h2-flow-control when unset
       #   reuse-settings: # aka XMUX
       #     max-concurrency: "16-32"
       #     max-connections: "0"

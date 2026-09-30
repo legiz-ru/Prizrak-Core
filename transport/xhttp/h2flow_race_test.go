@@ -1,4 +1,4 @@
-//go:build race && go1.22
+//go:build race && go1.24
 
 package xhttp
 

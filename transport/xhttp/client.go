@@ -155,7 +155,9 @@ func (c *PacketUpWriter) Close() error {
 	return nil
 }
 
-func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFunc, alpn []string, keepAlivePeriod time.Duration) http.RoundTripper {
+// NewTransport builds the XHTTP round tripper. h2Flow puts the HTTP/2 flow
+// governor on connections dialed in h2 mode; h3 and http/1.1 ignore it.
+func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFunc, alpn []string, keepAlivePeriod time.Duration, h2Flow bool) http.RoundTripper {
 	if len(alpn) == 1 && alpn[0] == "h3" { // `alpn: [h3]` means using h3 mode
 		if keepAlivePeriod == 0 {
 			keepAlivePeriod = QuicgoH3KeepAlivePeriod
@@ -217,6 +219,9 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 			if err != nil {
 				_ = raw.Close()
 				return nil, err
+			}
+			if h2Flow {
+				wrapped = newFlowClientConn(wrapped)
 			}
 			return wrapped, nil
 		},

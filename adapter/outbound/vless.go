@@ -114,6 +114,7 @@ type XHTTPOptions struct {
 	UplinkChunkSize      string                 `proxy:"uplink-chunk-size,omitempty"`
 	ScMaxEachPostBytes   string                 `proxy:"sc-max-each-post-bytes,omitempty"`
 	ScMinPostsIntervalMs string                 `proxy:"sc-min-posts-interval-ms,omitempty"`
+	H2FlowControl        bool                   `proxy:"h2-flow-control,omitempty"`
 	ReuseSettings        *XHTTPReuseSettings    `proxy:"reuse-settings,omitempty"` // aka XMUX
 	DownloadSettings     *XHTTPDownloadSettings `proxy:"download-settings,omitempty"`
 }
@@ -132,6 +133,7 @@ type XHTTPDownloadSettings struct {
 	Path          *string             `proxy:"path,omitempty"`
 	Host          *string             `proxy:"host,omitempty"`
 	Headers       *map[string]string  `proxy:"headers,omitempty"`
+	H2FlowControl *bool               `proxy:"h2-flow-control,omitempty"`
 	ReuseSettings *XHTTPReuseSettings `proxy:"reuse-settings,omitempty"` // aka XMUX
 	// proxy part
 	Server            *string           `proxy:"server,omitempty"`
@@ -716,6 +718,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 				},
 				v.option.ALPN,
 				hKeepAlivePeriod,
+				v.option.XHTTPOpts.H2FlowControl,
 			)
 		}
 		var makeDownloadTransport func() http.RoundTripper
@@ -907,6 +910,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 					},
 					downloadALPN,
 					downloadHKeepAlivePeriod,
+					lo.FromPtrOr(ds.H2FlowControl, v.option.XHTTPOpts.H2FlowControl),
 				)
 			}
 		}
