@@ -1072,7 +1072,11 @@ proxies: # socks5
       # uplink-chunk-size: 0 # only applicable when uplink-data-placement is not body
       # sc-max-each-post-bytes: 1000000
       # sc-min-posts-interval-ms: 30
-      # h2-flow-control: false # h2 mode only: pace the server download by how fast the client reads, instead of letting it fill large HTTP/2 windows
+      # h2-flow: # h2 mode only, also used by download-settings
+      #   enabled: false # HTTP/2 flow governor: pace the server download by how fast the client reads, instead of letting it fill large HTTP/2 windows
+      #   max-stream-receive-window: 0 # HTTP/2 receive window per stream in bytes, 65535-1073741824. 0 keeps Go's 4 MiB. A ceiling with the governor, a fixed window without it
+      #   max-connection-receive-window: 0 # HTTP/2 receive window per connection in bytes, 65535-1073741824
+      # h2-flow-control: false # shorthand for h2-flow.enabled; h2-flow.enabled wins when both are set
       # reuse-settings: # aka XMUX
       #   max-concurrency: "16-32"
       #   max-connections: "0"
@@ -1086,7 +1090,6 @@ proxies: # socks5
       #   host: xxx.com
       #   headers:
       #     X-Forwarded-For: ""
-      #   h2-flow-control: false # inherits xhttp-opts h2-flow-control when unset
       #   reuse-settings: # aka XMUX
       #     max-concurrency: "16-32"
       #     max-connections: "0"

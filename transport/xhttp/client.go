@@ -155,9 +155,10 @@ func (c *PacketUpWriter) Close() error {
 	return nil
 }
 
-// NewTransport builds the XHTTP round tripper. h2Flow puts the HTTP/2 flow
-// governor on connections dialed in h2 mode; h3 and http/1.1 ignore it.
-func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFunc, alpn []string, keepAlivePeriod time.Duration, h2Flow bool) http.RoundTripper {
+// NewTransport builds the XHTTP round tripper. h2Flow is the xhttp-opts
+// h2-flow block: in h2 mode it can put the HTTP/2 flow governor on dialed
+// connections and set the HTTP/2 receive windows; h3 and http/1.1 ignore it.
+func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFunc, alpn []string, keepAlivePeriod time.Duration, h2Flow *H2FlowOptions) http.RoundTripper {
 	if len(alpn) == 1 && alpn[0] == "h3" { // `alpn: [h3]` means using h3 mode
 		if keepAlivePeriod == 0 {
 			keepAlivePeriod = QuicgoH3KeepAlivePeriod
@@ -209,6 +210,11 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 	// see: https://github.com/golang/go/issues/79293#issuecomment-4426393534
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
+	http2Config := &http.HTTP2Config{
+		SendPingTimeout: keepAlivePeriod,
+	}
+	h2Flow.apply(http2Config)
+	governed := h2Flow.governed()
 	return &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			raw, err := dialRaw(ctx)
@@ -220,16 +226,14 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 				_ = raw.Close()
 				return nil, err
 			}
-			if h2Flow {
+			if governed {
 				wrapped = newFlowClientConn(wrapped)
 			}
 			return wrapped, nil
 		},
 		IdleConnTimeout: ConnIdleTimeout,
 		Protocols:       protocols,
-		HTTP2: &http.HTTP2Config{
-			SendPingTimeout: keepAlivePeriod,
-		},
+		HTTP2:           http2Config,
 	}
 }
 

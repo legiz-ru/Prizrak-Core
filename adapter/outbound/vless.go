@@ -114,9 +114,25 @@ type XHTTPOptions struct {
 	UplinkChunkSize      string                 `proxy:"uplink-chunk-size,omitempty"`
 	ScMaxEachPostBytes   string                 `proxy:"sc-max-each-post-bytes,omitempty"`
 	ScMinPostsIntervalMs string                 `proxy:"sc-min-posts-interval-ms,omitempty"`
-	H2FlowControl        bool                   `proxy:"h2-flow-control,omitempty"`
-	ReuseSettings        *XHTTPReuseSettings    `proxy:"reuse-settings,omitempty"` // aka XMUX
+	H2Flow               *xhttp.H2FlowOptions   `proxy:"h2-flow,omitempty"`
+	H2FlowControl        bool                   `proxy:"h2-flow-control,omitempty"` // shorthand for h2-flow.enabled
+	ReuseSettings        *XHTTPReuseSettings    `proxy:"reuse-settings,omitempty"`  // aka XMUX
 	DownloadSettings     *XHTTPDownloadSettings `proxy:"download-settings,omitempty"`
+}
+
+// h2Flow is the h2-flow block with h2-flow-control folded in: h2-flow-control
+// turns the governor on unless h2-flow sets enabled itself.
+func (o XHTTPOptions) h2Flow() *xhttp.H2FlowOptions {
+	if !o.H2FlowControl || (o.H2Flow != nil && o.H2Flow.Enabled != nil) {
+		return o.H2Flow
+	}
+	h2Flow := xhttp.H2FlowOptions{}
+	if o.H2Flow != nil {
+		h2Flow = *o.H2Flow
+	}
+	enabled := true
+	h2Flow.Enabled = &enabled
+	return &h2Flow
 }
 
 type XHTTPReuseSettings struct {
@@ -133,7 +149,6 @@ type XHTTPDownloadSettings struct {
 	Path          *string             `proxy:"path,omitempty"`
 	Host          *string             `proxy:"host,omitempty"`
 	Headers       *map[string]string  `proxy:"headers,omitempty"`
-	H2FlowControl *bool               `proxy:"h2-flow-control,omitempty"`
 	ReuseSettings *XHTTPReuseSettings `proxy:"reuse-settings,omitempty"` // aka XMUX
 	// proxy part
 	Server            *string           `proxy:"server,omitempty"`
@@ -718,7 +733,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 				},
 				v.option.ALPN,
 				hKeepAlivePeriod,
-				v.option.XHTTPOpts.H2FlowControl,
+				v.option.XHTTPOpts.h2Flow(),
 			)
 		}
 		var makeDownloadTransport func() http.RoundTripper
@@ -910,7 +925,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 					},
 					downloadALPN,
 					downloadHKeepAlivePeriod,
-					lo.FromPtrOr(ds.H2FlowControl, v.option.XHTTPOpts.H2FlowControl),
+					v.option.XHTTPOpts.h2Flow(),
 				)
 			}
 		}
