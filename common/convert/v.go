@@ -159,6 +159,7 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 			var extraMap map[string]any
 			if err := json.Unmarshal([]byte(extra), &extraMap); err == nil {
 				parseXHTTPExtra(extraMap, xhttpOpts)
+				parseXHTTPH2Flow(extraMap, xhttpOpts)
 			}
 		}
 
