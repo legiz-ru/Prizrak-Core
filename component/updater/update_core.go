@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	baseReleaseURL    = "https://github.com/MetaCubeX/mihomo/releases/latest/download/"
-	versionReleaseURL = "https://github.com/MetaCubeX/mihomo/releases/latest/download/version.txt"
+	baseReleaseURL    = "https://github.com/legiz-ru/Prizrak-Core/releases/latest/download/"
+	versionReleaseURL = "https://github.com/legiz-ru/Prizrak-Core/releases/latest/download/version.txt"
 
 	baseAlphaURL    = "https://github.com/vernesong/mihomo/releases/download/Prerelease-Alpha/"
 	versionAlphaURL = "https://github.com/vernesong/mihomo/releases/download/Prerelease-Alpha/version.txt"
@@ -53,30 +53,30 @@ func (u *CoreUpdater) CoreBaseName() string {
 	switch runtime.GOARCH {
 	case "arm":
 		// mihomo-linux-armv5
-		return fmt.Sprintf("mihomo-%s-%sv%s", runtime.GOOS, runtime.GOARCH, features.GOARM)
+		return fmt.Sprintf("prizrak-core-%s-%sv%s", runtime.GOOS, runtime.GOARCH, features.GOARM)
 	case "arm64":
 		if runtime.GOOS == "android" {
 			// mihomo-android-arm64-v8
-			return fmt.Sprintf("mihomo-%s-%s-v8", runtime.GOOS, runtime.GOARCH)
+			return fmt.Sprintf("prizrak-core-%s-%s-v8", runtime.GOOS, runtime.GOARCH)
 		}
 		// mihomo-linux-arm64
-		return fmt.Sprintf("mihomo-%s-%s", runtime.GOOS, runtime.GOARCH)
+		return fmt.Sprintf("prizrak-core-%s-%s", runtime.GOOS, runtime.GOARCH)
 	case "mips", "mipsle":
 		// mihomo-linux-mips-hardfloat
-		return fmt.Sprintf("mihomo-%s-%s-%s", runtime.GOOS, runtime.GOARCH, features.GOMIPS)
+		return fmt.Sprintf("prizrak-core-%s-%s-%s", runtime.GOOS, runtime.GOARCH, features.GOMIPS)
 	case "amd64":
 		if runtime.GOOS == "android" {
 			// mihomo-android-amd64
-			return fmt.Sprintf("mihomo-%s-%s", runtime.GOOS, runtime.GOARCH)
+			return fmt.Sprintf("prizrak-core-%s-%s", runtime.GOOS, runtime.GOARCH)
 		}
 		// mihomo-linux-amd64-v1
-		return fmt.Sprintf("mihomo-%s-%s-%s", runtime.GOOS, runtime.GOARCH, features.GOAMD64)
+		return fmt.Sprintf("prizrak-core-%s-%s-%s", runtime.GOOS, runtime.GOARCH, features.GOAMD64)
 	default:
 		// mihomo-linux-386
 		// mihomo-linux-mips64
 		// mihomo-linux-riscv64
 		// mihomo-linux-s390x
-		return fmt.Sprintf("mihomo-%s-%s", runtime.GOOS, runtime.GOARCH)
+		return fmt.Sprintf("prizrak-core-%s-%s", runtime.GOOS, runtime.GOARCH)
 	}
 }
 
