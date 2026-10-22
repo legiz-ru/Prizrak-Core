@@ -295,8 +295,8 @@ func (c *LruCache[K, V]) FilterByKeyPrefix(prefix string) map[string]V {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	result := make(map[string]V)
-	now := time.Now().Unix()
+	result := make(map[string]V, len(c.cache))
+	var now int64
 
 	for k, le := range c.cache {
 		keyStr, ok := any(k).(string)
@@ -308,13 +308,18 @@ func (c *LruCache[K, V]) FilterByKeyPrefix(prefix string) map[string]V {
 			continue
 		}
 
-		if !c.staleReturn && c.maxAge > 0 && le.Value.expires <= now {
-			c.deleteElement(le)
-			continue
+		// the clock is only read for a cache that can hold stale entries
+		if !c.staleReturn && c.maxAge > 0 {
+			if now == 0 {
+				now = time.Now().Unix()
+			}
+			if le.Value.expires <= now {
+				c.deleteElement(le)
+				continue
+			}
 		}
 
-		e := le.Value
-		result[keyStr] = e.value
+		result[keyStr] = le.Value.value
 	}
 
 	c.maybeDeleteOldest()
@@ -327,20 +332,14 @@ func (c *LruCache[K, V]) RemoveByKeyPrefix(prefix string) int {
 	defer c.mu.Unlock()
 
 	var removed int
-	var keysToRemove []K
 
+	// an entry may be deleted during the range
 	for k := range c.cache {
 		keyStr, ok := any(k).(string)
-		if !ok {
+		if !ok || !strings.HasPrefix(keyStr, prefix) {
 			continue
 		}
 
-		if strings.HasPrefix(keyStr, prefix) {
-			keysToRemove = append(keysToRemove, k)
-		}
-	}
-
-	for _, k := range keysToRemove {
 		c.delete(k)
 		removed++
 	}

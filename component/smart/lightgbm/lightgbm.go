@@ -14,222 +14,330 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vernesong/leaves"
 	"github.com/metacubex/mihomo/common/singleflight"
 	mihomoHttp "github.com/metacubex/mihomo/component/http"
 	"github.com/metacubex/mihomo/component/smart"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
+
+	"github.com/vernesong/leaves"
 )
 
 const (
-	MaxFeatureSize = 30
+	MaxFeatureSize = 32
+
+	// a corrupt max_feature_idx must not drive an unbounded allocation in the tail fill
+	maxModelFeatureSlots = 4096
 )
 
+type keywordEntry struct {
+	keyword  string
+	category int
+}
+
+type WeightModel struct {
+	model      *leaves.Ensemble
+	transforms *FeatureTransforms
+	lastUpdate time.Time
+	mutex      sync.RWMutex
+}
+
 var (
-	smartModel   *WeightModel
-	reloadModel  = singleflight.Group[bool]{StoreResult: false}
-	modelOnce    sync.Once
-	lgbmUrl      string
+	smartModel  *WeightModel
+	reloadModel = singleflight.Group[bool]{StoreResult: false}
+	modelOnce   sync.Once
+	lgbmUrl     string
 
 	domainRegex = regexp.MustCompile(`([a-zA-Z0-9-]+)(\.[a-zA-Z0-9-]+)+$`)
 
-	// 常见ASN提供商类型分类
-	asnCategories = map[string]int{
-		// 全球科技
-		"google":     1,
-		"amazon":     2,
-		"microsoft":  3,
-		"facebook":   4,
-		"apple":      5,
-		"cloudflare": 6,
-		"akamai":     7,
-		"fastly":     8,
-		"netflix":    9,
-		"alibaba":    10,
-		"tencent":    11,
-		"baidu":      12,
-		// 中国运营商
-		"chinatelecom": 13,
-		"chinaunicom":  14,
-		"chinamobile":  15,
-		"chinaedu":     16,
-		"cstnet":       17,
-		// 全球CDN/云服务
-		"cdn77":        20,
-		"limelight":    21,
-		"edgecast":     22,
-		"stackpath":    23,
-		"imperva":      24,
-		"oracle":       25,
-		"ibm":          26,
-		"digitalocean": 27,
-		"linode":       28,
-		"ovh":          29,
-		"hetzner":      30,
-		"vultr":        31,
-		"cogent":       32,
-		"leaseweb":     33,
-		"upyun":        34,
-		"qingcloud":    35,
-		"ucloud":       36,
-		// 国际主要运营商
-		"verizon":  40,
-		"comcast":  41,
-		"att":      42,
-		"sprint":   43,
-		"tmobile":  44,
-		"level3":   45,
-		"ntt":      46,
-		"kddi":     47,
-		"softbank": 48,
-		"telstra":  49,
-		"singtel":  50,
-		"starhub":  51,
-		"m1":       52,
-		"pccw":     53,
-		"hkbn":     54,
-		"smartone": 55,
-		"hgc":      56,
-		"cht":      57,
-		"fetnet":   58,
-		"twm":      59,
-		// 内容提供商
-		"twitter":    70,
-		"twitch":     71,
-		"discord":    72,
-		"spotify":    73,
-		"github":     74,
-		"steam":      75,
-		"blizzard":   76,
-		"riotgames":  77,
-		"epicgames":  78,
-		"ea":         79,
-		"bytedance":  80,
-		"bilibili":   81,
-		"netactuate": 82,
-		// 主要交换中心
-		"hkix":    90,
-		"linx":    91,
-		"jpix":    92,
-		"equinix": 93,
-		"sgix":    94,
-		"de-cix":  95,
-		"ams-ix":  96,
-		// 教育科研
-		"cern":     100,
-		"mit":      101,
-		"stanford": 102,
-		"tsinghua": 103,
-		"pku":      104,
-		// 金融行业
-		"visa":       110,
-		"mastercard": 111,
-		"paypal":     112,
-		"stripe":     113,
-		"alipay":     114,
-		"wechatpay":  115,
+	// provider keywords; enums start at 100, the 1-99 block is reserved for computed codes
+	asnCategories = []keywordEntry{
+		// global tech
+		{"google", 100},
+		{"amazon", 101},
+		{"microsoft", 102},
+		{"facebook", 103},
+		{"apple", 104},
+		{"cloudflare", 105},
+		{"akamai", 106},
+		{"fastly", 107},
+		{"netflix", 108},
+		{"alibaba", 109},
+		{"tencent", 110},
+		{"baidu", 111},
+		{"huawei", 112},
+		{"bytedance", 113},
+		{"tiktok", 113},
+		{"xiaomi", 114},
+		{"salesforce", 115},
+		{"adobe", 116},
+		{"nvidia", 117},
+		// china carriers
+		{"chinatelecom", 120},
+		{"china telecom", 120},
+		{"chinanet", 120},
+		{"chinaunicom", 121},
+		{"china unicom", 121},
+		{"chinamobile", 122},
+		{"china mobile", 122},
+		{"cmnet", 122},
+		{"chinaedu", 123},
+		{"china education", 123},
+		{"cernet", 123},
+		{"cstnet", 124},
+		// international carriers
+		{"verizon", 140},
+		{"comcast", 141},
+		{"at&t", 142},
+		{"sprint", 143},
+		{"t-mobile", 144},
+		{"tmobile", 144},
+		{"level3", 145},
+		{"level 3", 145},
+		{"lumen", 145},
+		{"centurylink", 145},
+		{"ntt", 146},
+		{"kddi", 147},
+		{"softbank", 148},
+		{"telstra", 149},
+		{"singtel", 150},
+		{"starhub", 151},
+		{"m1", 152},
+		{"pccw", 153},
+		{"hkbn", 154},
+		{"smartone", 155},
+		{"hgc", 156},
+		{"cht", 157},
+		{"chunghwa", 157},
+		{"hinet", 157},
+		{"fetnet", 158},
+		{"far eastone", 158},
+		{"twm", 159},
+		{"taiwan mobile", 159},
+		{"hkt", 160},
+		{"deutsche telekom", 161},
+		{"vodafone", 162},
+		{"telefonica", 163},
+		{"optus", 164},
+		{"bell canada", 165},
+		{"rogers communications", 166},
+		{"telus", 167},
+		{"rakuten", 168},
+		{"korea telecom", 169},
+		{"viettel", 170},
+		{"pldt", 171},
+		{"sk broadband", 172},
+		{"charter communications", 173},
+		// global CDN and cloud
+		{"cdn77", 180},
+		{"limelight", 181},
+		{"edgecast", 182},
+		{"edgio", 182},
+		{"stackpath", 183},
+		{"imperva", 184},
+		{"oracle", 185},
+		{"ibm", 186},
+		{"digitalocean", 187},
+		{"linode", 188},
+		{"ovh", 189},
+		{"hetzner", 190},
+		{"vultr", 191},
+		{"cogent", 192},
+		{"leaseweb", 193},
+		{"upyun", 194},
+		{"qingcloud", 195},
+		{"ucloud", 196},
+		{"contabo", 197},
+		{"rackspace", 198},
+		{"bunnyway", 199},
+		{"bunnycdn", 199},
+		{"netactuate", 200},
+		{"wangsu", 201},
+		{"kingsoft", 202},
+		{"scaleway", 203},
+		{"ionos", 204},
+		// content providers
+		{"twitter", 220},
+		{"twitch", 221},
+		{"discord", 222},
+		{"spotify", 223},
+		{"github", 224},
+		{"steam", 225},
+		{"blizzard", 226},
+		{"riotgames", 227},
+		{"riot games", 227},
+		{"epicgames", 228},
+		{"electronic arts", 229},
+		{"valve", 230},
+		{"mozilla", 231},
+		{"reddit", 232},
+		{"openai", 233},
+		{"bilibili", 234},
+		// education and research
+		{"cern", 240},
+		{"stanford", 241},
+		{"tsinghua", 242},
+		{"pku", 243},
+		// finance
+		{"visa", 250},
+		{"mastercard", 251},
+		{"paypal", 252},
+		{"stripe", 253},
+		{"alipay", 254},
+		{"wechatpay", 255},
+		{"unionpay", 256},
+		// internet exchanges
+		{"hkix", 260},
+		{"linx", 261},
+		{"jpix", 262},
+		{"equinix", 263},
+		{"sgix", 264},
+		{"de-cix", 265},
+		{"ams-ix", 266},
 	}
 
-	// 主要国家/地区代码映射
+	// region enums start at 100, the 1-99 block is reserved for the computed hash fallback
 	geoCategories = map[string]int{
-		"CN": 1,  // 中国
-		"HK": 2,  // 香港
-		"TW": 3,  // 台湾
-		"JP": 4,  // 日本
-		"KR": 5,  // 韩国
-		"SG": 6,  // 新加坡
-		"US": 7,  // 美国
-		"CA": 8,  // 加拿大
-		"GB": 9,  // 英国
-		"DE": 10, // 德国
-		"FR": 11, // 法国
-		"RU": 12, // 俄罗斯
-		"AU": 13, // 澳大利亚
-		"IN": 14, // 印度
-		"BR": 15, // 巴西
-		"IT": 16, // 意大利
-		"ES": 17, // 西班牙
-		"NL": 18, // 荷兰
-		"SE": 19, // 瑞典
-		"CH": 20, // 瑞士
-		"PL": 21, // 波兰
-		"TR": 22, // 土耳其
-		"MX": 23, // 墨西哥
-		"ZA": 24, // 南非
-		"AR": 25, // 阿根廷
-		"ID": 26, // 印度尼西亚
-		"TH": 27, // 泰国
-		"VN": 28, // 越南
-		"PH": 29, // 菲律宾
-		"MY": 30, // 马来西亚
-		"MO": 31, // 澳门
+		"CN": 100,
+		"HK": 101,
+		"TW": 102,
+		"JP": 103,
+		"KR": 104,
+		"SG": 105,
+		"US": 106,
+		"CA": 107,
+		"GB": 108,
+		"DE": 109,
+		"FR": 110,
+		"RU": 111,
+		"AU": 112,
+		"IN": 113,
+		"BR": 114,
+		"IT": 115,
+		"ES": 116,
+		"NL": 117,
+		"SE": 118,
+		"CH": 119,
+		"PL": 120,
+		"TR": 121,
+		"MX": 122,
+		"ZA": 123,
+		"AR": 124,
+		"ID": 125,
+		"TH": 126,
+		"VN": 127,
+		"PH": 128,
+		"MY": 129,
+		"MO": 130,
+		"AE": 131,
+		"AT": 132,
+		"BD": 133,
+		"BE": 134,
+		"CL": 135,
+		"CO": 136,
+		"CZ": 137,
+		"DK": 138,
+		"EG": 139,
+		"FI": 140,
+		"GR": 141,
+		"IE": 142,
+		"IL": 143,
+		"IS": 144,
+		"KE": 145,
+		"KH": 146,
+		"KZ": 147,
+		"LK": 148,
+		"LU": 149,
+		"MA": 150,
+		"MM": 151,
+		"NG": 152,
+		"NO": 153,
+		"NZ": 154,
+		"PE": 155,
+		"PK": 156,
+		"PT": 157,
+		"RO": 158,
+		"SA": 159,
+		"UA": 160,
 	}
 
-	// 端口服务分类
+	// well known ports
 	wellKnownPorts = map[uint16]int{
-		22:    1,  // SSH
-		25:    2,  // SMTP
-		53:    3,  // DNS
-		80:    4,  // HTTP
-		110:   5,  // POP3
-		143:   6,  // IMAP
-		443:   7,  // HTTPS
-		465:   8,  // SMTPS
-		784:   3,  // DNS over QUIC (DoQ)
-		853:   3,  // DNS over TLS (DoT)
-		993:   9,  // IMAPS
-		995:   10, // POP3S
-		1194:  11, // OpenVPN
-		1812:  12, // RADIUS
-		3306:  13, // MySQL
-		5053:  3,  // DNS备用端口
-		5353:  3,  // mDNS
-		5355:  3,  // LLMNR
-		5432:  14, // PostgreSQL
-		6379:  15, // Redis
-		8853:  3,  // DoT备用端口
-		9953:  3,  // DNS管理端口
-		27017: 16, // MongoDB
-		6660:  17, // IRC
-		6665:  17, // IRC
-		6666:  17, // IRC
-		6667:  17, // IRC
-		6668:  17, // IRC
-		6669:  17, // IRC
-		8000:  18, // 常见HTTP替代端口
-		8008:  18, // 常见HTTP替代端口
-		8080:  18, // 常见HTTP替代端口
-		8443:  19, // 常见HTTPS替代端口
-		8883:  20, // MQTT over TLS
+		22:    100, // SSH
+		25:    101, // SMTP
+		53:    102, // DNS
+		80:    103, // HTTP
+		110:   104, // POP3
+		123:   120, // NTP
+		143:   105, // IMAP
+		389:   130, // LDAP
+		443:   106, // HTTPS
+		445:   122, // SMB
+		465:   107, // SMTPS
+		587:   121, // SMTP submission
+		636:   131, // LDAPS
+		784:   102, // DNS over QUIC (early draft port, final is 853)
+		853:   102, // DNS over TLS / QUIC
+		993:   108, // IMAPS
+		995:   109, // POP3S
+		1194:  110, // OpenVPN
+		1433:  124, // MSSQL
+		1521:  125, // Oracle DB
+		1812:  111, // RADIUS
+		2049:  126, // NFS
+		3306:  112, // MySQL
+		3389:  123, // RDP
+		5053:  102, // DNS backup port
+		5353:  102, // mDNS
+		5355:  102, // LLMNR
+		5432:  113, // PostgreSQL
+		5672:  128, // AMQP
+		5900:  127, // VNC
+		6379:  114, // Redis
+		6660:  116, // IRC
+		6665:  116, // IRC
+		6666:  116, // IRC
+		6667:  116, // IRC
+		6668:  116, // IRC
+		6669:  116, // IRC
+		8000:  117, // common alternative HTTP port
+		8008:  117, // common alternative HTTP port
+		8080:  117, // common alternative HTTP port
+		8443:  118, // common alternative HTTPS port
+		8853:  102, // DoT backup port
+		8883:  119, // MQTT over TLS
+		9200:  129, // Elasticsearch
+		9953:  102, // DNS management port
+		11211: 132, // memcached
+		27017: 115, // MongoDB
 	}
 
-	// 端口范围分类
+	// port ranges
 	portRanges = []struct {
 		min, max uint16
 		category int
 	}{
-		{0, 1023, 20},      // 系统端口
-		{1024, 49151, 21},  // 注册端口
-		{49152, 65535, 22}, // 动态端口
+		{0, 1023, 8},       // system ports
+		{1024, 49151, 9},   // registered ports
+		{49152, 65535, 10}, // dynamic ports
 	}
 
 	apiServicePorts = map[uint16]bool{
-		8080: true, 8443: true, 9000: true, 9001: true, 9002: true, // 常见API端口
-		3000: true, 3001: true, 5000: true, 5001: true, // 开发API端口
-		8000: true, 8001: true, 8888: true, 4000: true, 4001: true, // 其他API服务端口
-		6000: true, 6001: true, 7000: true, 7001: true, // 微服务API端口
+		8080: true, 8443: true, 9000: true, 9001: true, 9002: true, // common API ports
+		3000: true, 3001: true, 5000: true, 5001: true, // development API ports
+		8000: true, 8001: true, 8888: true, 4000: true, 4001: true, // other API service ports
+		6000: true, 6001: true, 7000: true, 7001: true, // microservice API ports
 	}
 
 	dnsServicePorts = map[uint16]bool{
-		53:   true, // 传统DNS (UDP/TCP)
-		853:  true, // DNS over TLS (DoT)
-		784:  true, // DNS over QUIC (DoQ) - IANA分配的端口
-		5053: true, // 一些DNS服务的备用端口
+		53:   true, // classic DNS (UDP/TCP)
+		853:  true, // DNS over TLS (DoT) / QUIC (DoQ)
+		784:  true, // DNS over QUIC (early draft port)
+		5053: true, // backup port of some DNS services
 		5353: true, // mDNS (Multicast DNS)
 		5355: true, // LLMNR (Link-Local Multicast Name Resolution)
-		8853: true, // 一些DoT服务使用的备用端口
-		9953: true, // 一些DNS服务使用的管理端口
+		8853: true, // backup port some DoT services use
+		9953: true, // management port some DNS services use
 	}
 
 	gameSpecificPorts = map[uint16]bool{
@@ -238,13 +346,13 @@ var (
 		27031: true, 27036: true, // Steam In-Home Streaming
 		3074: true,             // Xbox Live
 		3478: true, 3479: true, // PlayStation Network / Nintendo Switch Online
-		3659: true,                                                 // 腾讯游戏
-		6250: true,                                                 // 网易游戏
-		7000: true, 7001: true, 7002: true, 7003: true, 7004: true, // 多种游戏服务
+		3659: true,                                                 // Tencent games
+		6250: true,                                                 // NetEase games
+		7000: true, 7001: true, 7002: true, 7003: true, 7004: true, // various game services
 		8393: true, 8394: true, // Origin
-		9000: true, 9001: true, // QQ游戏
-		9330: true, 9331: true, // 多种游戏服务
-		9339:  true,                                                                  // 多种游戏服务
+		9000: true, 9001: true, // QQ games
+		9330: true, 9331: true, // various game services
+		9339:  true,                                                                  // various game services
 		14000: true, 14001: true, 14002: true, 14003: true, 14004: true, 14008: true, // Battlefield
 		16000: true,                                                                  // Battlefield
 		18000: true, 18060: true, 18120: true, 18180: true, 18240: true, 18300: true, // Fortnite
@@ -252,67 +360,68 @@ var (
 		20000: true, 20001: true, 20002: true, // Garena
 		22100: true, 22101: true, 22102: true, // Valorant
 		30000: true, 30001: true, 30002: true, 30003: true, 30004: true, // Call of Duty
-		35000: true, 35001: true, 35002: true, // PUBG/和平精英
-		40000: true, 40001: true, 40002: true, // 多种游戏服务
-		50000: true, 50001: true, 50002: true, // League of Legends（外服）
-		50505: true,              // Arena of Valor / 王者荣耀
-		65010: true, 65050: true, // LOL手游
+		35000: true, 35001: true, 35002: true, // PUBG / Game for Peace
+		40000: true, 40001: true, 40002: true, // various game services
+		50000: true, 50001: true, 50002: true, // League of Legends (international)
+		50505: true,              // Arena of Valor
+		65010: true, 65050: true, // League of Legends: Wild Rift
 		3724: true, // World of Warcraft
 		6112: true, // Warcraft III/Battle.net
 		6881: true, // BitTorrent
 	}
 
-	// 通信服务专用端口
+	// communication ports
 	communicationPorts = map[uint16]bool{
 		5060: true, 5061: true, // SIP
 		1720: true,             // H.323
-		1080: true, 1443: true, // 多种代理和通信服务
+		1080: true, 1443: true, // proxy and communication services
 		3478: true, 3479: true, // STUN/TURN
 		5349: true, 5350: true, // STUN/TURN over TLS
 		5222: true, 5269: true, // XMPP
 		5938: true, // TeamViewer
 		6881: true, 6882: true, 6883: true, 6884: true, 6885: true,
 		6886: true, 6887: true, 6888: true, 6889: true, // BT
-		8801: true, 8802: true, // 多种 P2P 通信
-		8443:  true,              // 常见 WebRTC/视频会议
+		8801: true, 8802: true, // P2P communication services
+		8443:  true,              // common WebRTC / video conference
 		10000: true, 10001: true, // WebRTC Media
 		19302: true, 19303: true, // Google STUN
-		50000: true, 50001: true, 50002: true, // 常见 RTP 媒体端口
-		50003: true, 50004: true, 50005: true, // 常见 RTP 媒体端口
-		55000: true, 55001: true, // 多种通信应用
+		50000: true, 50001: true, 50002: true, // common RTP media ports
+		50003: true, 50004: true, 50005: true, // common RTP media ports
+		55000: true, 55001: true, // communication applications
 		1863:  true, // MSN Messenger
 		5228:  true, // Google GCM/FCM
 		34784: true, // Zoom
 	}
 
-	// 端口范围分类 - 游戏和通信相关
+	// game and communication port ranges
 	gameCommRanges = []struct {
 		min, max uint16
-		category int // 1=游戏, 2=通信, 3=混合
+		category int // 1=game, 2=communication, 3=mixed
 	}{
-		{3000, 3999, 3},   // 混合范围，包含多种游戏和通信应用
-		{5000, 5999, 2},   // 通信应用范围
-		{6000, 7000, 3},   // 混合范围，包含P2P和游戏
-		{8000, 9000, 3},   // 混合范围，包含游戏和通信
-		{10000, 20000, 3}, // 混合范围，包含WebRTC和多种游戏服务
-		{27000, 28000, 1}, // Steam和相关游戏端口
-		{30000, 32000, 1}, // 游戏服务常见端口
-		{49000, 50000, 2}, // 多种RTP/通信使用的高位端口
-		{50000, 55000, 3}, // 混合范围，包含通信和游戏
-		{55000, 60000, 2}, // 多种通信使用的高位端口
+		{3000, 3999, 3},   // mixed range of game and communication apps
+		{5000, 5999, 2},   // communication applications
+		{6000, 7000, 3},   // mixed range of P2P and games
+		{8000, 9000, 3},   // mixed range of games and communication
+		{10000, 20000, 3}, // mixed range of WebRTC and game services
+		{27000, 28000, 1}, // Steam and related game ports
+		{30000, 32000, 1}, // common game service ports
+		{49000, 50000, 2}, // high ports used by RTP and communication
+		{50000, 55000, 3}, // mixed range of communication and games
+		{55000, 60000, 2}, // high ports used by communication services
 	}
 
-	// 常见流媒体/游戏域名关键字
+	// streaming and game domain keywords
 	streamingKeywords = []string{
 		"youtube", "netflix", "hulu", "spotify", "tiktok", "douyin", "youku", "iqiyi",
 		"bilibili", "twitch", "hbo", "disney", "vimeo", "vod", "stream", "video",
 		"media", "movie", "tv", "music", "audio", "cdm", "cdn", "content",
 		"live", "livestream", "replay", "shorts", "kuaishou", "huya", "douyu",
+		"googlevideo", "ytimg", "primevideo", "hotstar", "wetv", "kugou", "acfun",
 	}
 
 	gameKeywords = []string{
-		"game", "play", "steam", "xbox", "playstation", "nintendo", "ea.com", "riot",
-		"blizzard", "ubisoft", "epic", "cod", "minecraft", "roblox", "pubg", "fortnite",
+		"game", "play.google", "steam", "xbox", "playstation", "nintendo", "ea.com", "riotcdn",
+		"blizzard", "ubisoft", "epic", "cod.", "callofduty", "minecraft", "roblox", "pubg", "fortnite",
 		"valorant", "riotgames", "leagueoflegends", "warzone",
 		"apex", "apexlegends", "overwatch", "dota", "csgo",
 		"counterstrike", "hearthstone", "battlenet", "battle.net",
@@ -324,14 +433,14 @@ var (
 		"discord", "slack", "telegram", "signal", "whatsapp", "skype", "wechat",
 		"voicechat", "videocall", "rtc", "webrtc", "jitsi",
 		"mumble", "ventrilo", "teamspeak", "discord.gg",
-		"meeting", "conference", "huddle", "gather",
-		"qq", "msn", "icq", "line", "kakao", "viber", "imo", "element",
+		"meeting", "huddle", "gather",
+		"qq", "msn", "icq", "line.me", "linecorp", "line-apps", "line-scdn", "kakao", "viber", "imo.im", "element.io",
 	}
 
 	apiServiceKeywords = []string{
 		"api.cloudflare.com", "api.amazonaws.com", "api.azure.com", "googleapis.com",
 		"api.fastly.com", "api.maxcdn.com", "api.keycdn.com", "api.bunnycdn.com",
-		"api.digitalocean.com", "api.vultr.com", "api.linode.com", "api.hetzner.com",
+		"api.digitalocean.com", "api.vultr.com", "api.linode.com", "api.hetzner.com", "amazonaws.com",
 
 		"api.vercel.com", "api.netlify.com", "api.heroku.com", "api.railway.app",
 		"api.render.com", "api.fly.io", "registry.npmjs.org", "pypi.org",
@@ -358,7 +467,7 @@ var (
 		"one.one.one.one", "family.cloudflare-dns.com", "security.cloudflare-dns.com",
 		"dns.quad9.net", "dns9.quad9.net", "dns10.quad9.net", "dns11.quad9.net",
 		"doh.opendns.com", "doh.familyshield.opendns.com", "doh.sandbox.opendns.com",
-		"mozilla.cloudflare-dns.com", "firefox.dns.nextdns.io",
+		"mozilla.cloudflare-dns.com", "firefox.dns.nextdns.io", "nextdns.io",
 		"dns.adguard.com", "dns-family.adguard.com", "dns-unfiltered.adguard.com",
 		"doh.cleanbrowsing.org", "family-filter-dns.cleanbrowsing.org",
 
@@ -379,102 +488,100 @@ var (
 		prefix   netip.Prefix
 		category int
 	}{
-		// IPv4私有地址范围
-		{netip.MustParsePrefix("10.0.0.0/8"), 1},
-		{netip.MustParsePrefix("172.16.0.0/12"), 1},
-		{netip.MustParsePrefix("192.168.0.0/16"), 1},
-		{netip.MustParsePrefix("127.0.0.0/8"), 2},
-		{netip.MustParsePrefix("169.254.0.0/16"), 3},
+		// IPv4 private ranges
+		{netip.MustParsePrefix("10.0.0.0/8"), 10},
+		{netip.MustParsePrefix("172.16.0.0/12"), 10},
+		{netip.MustParsePrefix("192.168.0.0/16"), 10},
+		{netip.MustParsePrefix("127.0.0.0/8"), 11},
+		{netip.MustParsePrefix("169.254.0.0/16"), 12},
 
-		// IPv6私有地址范围
-		{netip.MustParsePrefix("::1/128"), 2},
-		{netip.MustParsePrefix("fe80::/10"), 3},
-		{netip.MustParsePrefix("fc00::/7"), 1},
-		{netip.MustParsePrefix("2001:db8::/32"), 4},
+		// IPv4 special ranges
+		{netip.MustParsePrefix("100.64.0.0/10"), 13},
+		{netip.MustParsePrefix("192.0.2.0/24"), 13},
+		{netip.MustParsePrefix("198.51.100.0/24"), 13},
+		{netip.MustParsePrefix("203.0.113.0/24"), 13},
+		{netip.MustParsePrefix("240.0.0.0/4"), 13},
+
+		// IPv6 private ranges
+		{netip.MustParsePrefix("::1/128"), 11},
+		{netip.MustParsePrefix("fe80::/10"), 12},
+		{netip.MustParsePrefix("fc00::/7"), 10},
+		{netip.MustParsePrefix("2001:db8::/32"), 13},
+
+		// IPv6 special ranges
+		{netip.MustParsePrefix("ff00::/8"), 13},
 	}
 )
 
-type domainKeywordEntry struct {
-	keyword  string
-	category int
-}
-
-var allDomainKeywords []domainKeywordEntry
+var allDomainKeywords []keywordEntry
 
 func init() {
 	total := len(dnsServiceKeywords) + len(apiServiceKeywords) + len(gameKeywords) +
 		len(communicationKeywords) + len(streamingKeywords)
-	allDomainKeywords = make([]domainKeywordEntry, 0, total)
+	allDomainKeywords = make([]keywordEntry, 0, total)
 	for _, kw := range dnsServiceKeywords {
-		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 6})
+		allDomainKeywords = append(allDomainKeywords, keywordEntry{kw, 104})
 	}
 	for _, kw := range apiServiceKeywords {
-		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 5})
+		allDomainKeywords = append(allDomainKeywords, keywordEntry{kw, 103})
 	}
 	for _, kw := range gameKeywords {
-		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 3})
+		allDomainKeywords = append(allDomainKeywords, keywordEntry{kw, 101})
 	}
 	for _, kw := range communicationKeywords {
-		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 4})
+		allDomainKeywords = append(allDomainKeywords, keywordEntry{kw, 102})
 	}
 	for _, kw := range streamingKeywords {
-		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 2})
+		allDomainKeywords = append(allDomainKeywords, keywordEntry{kw, 100})
 	}
-}
-
-type WeightModel struct {
-	model      *leaves.Ensemble
-	transforms *FeatureTransforms
-	lastUpdate time.Time
-	mutex      sync.RWMutex
 }
 
 func GetModel() *WeightModel {
-    modelOnce.Do(func() {
-        m := &WeightModel{}
-        modelPath := C.Path.SmartModel()
+	modelOnce.Do(func() {
+		m := &WeightModel{}
+		modelPath := C.Path.SmartModel()
 
-        if _, err := os.Stat(modelPath); err == nil {
-            if err := m.loadModel(modelPath); err != nil {
-                log.Warnln("[Smart] Model.bin invalid, remove and download: %v", err)
-                if rmErr := os.Remove(modelPath); rmErr != nil {
-                    log.Errorln("[Smart] Failed to remove invalid Model.bin: %v", rmErr)
-                    return
-                }
+		if _, err := os.Stat(modelPath); err == nil {
+			if err := m.loadModel(modelPath); err != nil {
+				log.Warnln("[Smart] Model.bin invalid, remove and download: %v", err)
+				if rmErr := os.Remove(modelPath); rmErr != nil {
+					log.Errorln("[Smart] Failed to remove invalid Model.bin: %v", rmErr)
+					return
+				}
 
-                if downloadErr := downloadModel(modelPath); downloadErr != nil {
-                    log.Errorln("[Smart] Failed to download Model.bin: %v", downloadErr)
-                    return
-                }
+				if downloadErr := downloadModel(modelPath); downloadErr != nil {
+					log.Errorln("[Smart] Failed to download Model.bin: %v", downloadErr)
+					return
+				}
 
-                if reloadErr := m.loadModel(modelPath); reloadErr != nil {
-                    log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", reloadErr)
-                    return
-                }
+				if reloadErr := m.loadModel(modelPath); reloadErr != nil {
+					log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", reloadErr)
+					return
+				}
 
-                log.Infoln("[Smart] Model.bin downloaded and loaded successfully")
-            } else {
-                log.Infoln("[Smart] Model file loaded successfully")
-            }
-        } else {
-            log.Infoln("[Smart] Can't find Model.bin, start download")
-            if downloadErr := downloadModel(modelPath); downloadErr != nil {
-                log.Errorln("[Smart] Can't download Model.bin: %v", downloadErr)
-                return
-            }
+				log.Infoln("[Smart] Model.bin downloaded and loaded successfully")
+			} else {
+				log.Infoln("[Smart] Model file loaded successfully")
+			}
+		} else {
+			log.Infoln("[Smart] Can't find Model.bin, start download")
+			if downloadErr := downloadModel(modelPath); downloadErr != nil {
+				log.Errorln("[Smart] Can't download Model.bin: %v", downloadErr)
+				return
+			}
 
-            if loadErr := m.loadModel(modelPath); loadErr != nil {
-                log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", loadErr)
-                return
-            }
+			if loadErr := m.loadModel(modelPath); loadErr != nil {
+				log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", loadErr)
+				return
+			}
 
-            log.Infoln("[Smart] Download Model.bin finish")
-        }
+			log.Infoln("[Smart] Download Model.bin finish")
+		}
 
-        smartModel = m
-    })
+		smartModel = m
+	})
 
-    return smartModel
+	return smartModel
 }
 
 func (m *WeightModel) loadModel(path string) error {
@@ -486,13 +593,17 @@ func (m *WeightModel) loadModel(path string) error {
 		return fmt.Errorf("failed to load binary model: %v", err)
 	}
 
-	// 加载transforms参数
+	// a model with more slots still predicts, the missing tail is filled with zeros
+	if n := model.NFeatures(); n > MaxFeatureSize {
+		log.Warnln("[Smart] Model needs [%d] features, this build computes [%d], the missing slots are filled with zeros", n, MaxFeatureSize)
+	}
+
 	transforms, err := LoadTransformsFromModel(path)
 	if err != nil {
 		log.Warnln("[Smart] Failed to load transforms parameters: %v, using default config", err)
 		transforms = &FeatureTransforms{
 			TransformsEnabled: false,
-			FeatureOrder:      getDefaultFeatureOrder(),
+			FeatureOrder:      defaultFeatureOrder,
 			Transforms:        []TransformParams{},
 		}
 	} else {
@@ -590,18 +701,20 @@ func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor floa
 		return smart.CalculateWeight(input, priorityFactor)
 	}
 
-	// 准备原始特征
 	features := prepareFeatures(input)
 	if len(features) == 0 {
 		return smart.CalculateWeight(input, priorityFactor)
 	}
 
-	// 检测模型特征与当前版本是否兼容
-	if transforms != nil && !transforms.IsCompatibleWith(getDefaultFeatureOrder()) {
+	// a newer model may use uncomputed slots, the tail is filled up to the capped size
+	if n := model.NFeatures(); n > len(features) && n <= maxModelFeatureSlots {
+		features = append(features, make([]float64, n-len(features))...)
+	}
+
+	if transforms != nil && !transforms.IsCompatible() {
 		return smart.CalculateWeight(input, priorityFactor)
 	}
 
-	// 应用特征变换
 	if transforms != nil && transforms.TransformsEnabled {
 		features = transforms.ApplyTransforms(features)
 	}
@@ -647,7 +760,6 @@ func hashStringToFloat(s string, buckets int) float64 {
 func prepareFeatures(input *smart.ModelInput) []float64 {
 	features := make([]float64, 0, MaxFeatureSize)
 
-	// 1. 最后使用时间间隔
 	uploadMB := input.UploadTotal
 	downloadMB := input.DownloadTotal
 	maxUploadRateKB := input.MaxuploadRate
@@ -658,75 +770,64 @@ func prepareFeatures(input *smart.ModelInput) []float64 {
 		lastUsedSeconds = float64(time.Now().Unix() - input.LastUsed)
 	}
 
-	// 核心性能指标
-	features = append(features, float64(input.Success))                      // 成功次数
-	features = append(features, float64(input.Failure))                      // 失败次数
-	features = append(features, math.Log1p(float64(input.ConnectTime)))      // 连接时间（对数变换）
-	features = append(features, math.Log1p(float64(input.Latency)))          // 延迟（对数变换）
-	features = append(features, math.Log1p(uploadMB))                        // 上传流量MB
-	features = append(features, math.Log1p(input.HistoryUploadTotal))        // 历史上传流量
-	features = append(features, math.Log1p(maxUploadRateKB))                 // 最大上传速率
-	features = append(features, math.Log1p(input.HistoryMaxUploadRate))      // 历史最大上传速率
-	features = append(features, math.Log1p(downloadMB))                      // 下载流量MB
-	features = append(features, math.Log1p(input.HistoryDownloadTotal))      // 历史下载流量
-	features = append(features, math.Log1p(maxDownloadRateKB))               // 最大下载速率
-	features = append(features, math.Log1p(input.HistoryMaxDownloadRate))    // 历史最大下载速率
-	features = append(features, math.Log1p(durationMinutes))                 // 连接持续时间分钟（对数变换）
-	features = append(features, math.Log1p(input.HistoryConnectionDuration)) // 历史平均连接时间（对数变换）
-	features = append(features, math.Log1p(lastUsedSeconds))                 // 上次使用至今秒数（对数变换）
+	// the slot order is the feature order of the trained model, a new slot must be appended
+	features = append(features, float64(input.Success))
+	features = append(features, float64(input.Failure))
+	features = append(features, math.Log1p(float64(input.ConnectTime)))
+	features = append(features, math.Log1p(float64(input.Latency)))
+	features = append(features, math.Log1p(uploadMB))
+	features = append(features, math.Log1p(input.HistoryUploadTotal))
+	features = append(features, math.Log1p(maxUploadRateKB))
+	features = append(features, math.Log1p(input.HistoryMaxUploadRate))
+	features = append(features, math.Log1p(downloadMB))
+	features = append(features, math.Log1p(input.HistoryDownloadTotal))
+	features = append(features, math.Log1p(maxDownloadRateKB))
+	features = append(features, math.Log1p(input.HistoryMaxDownloadRate))
+	features = append(features, math.Log1p(durationMinutes))
+	features = append(features, math.Log1p(input.HistoryConnectionDuration))
+	features = append(features, math.Log1p(lastUsedSeconds))
 
-	// 网络协议特征
-	features = append(features, boolToFloat(input.IsUDP)) // 是否UDP协议
-	features = append(features, boolToFloat(input.IsTCP)) // 是否TCP协议
-	features = append(features, input.LossRate)           // 单次连接丢包率
-	features = append(features, input.CumulLossRate)      // 历史累计丢包率
+	features = append(features, boolToFloat(input.IsUDP))
+	features = append(features, boolToFloat(input.IsTCP))
+	features = append(features, input.LossRate)
+	features = append(features, input.CumulLossRate)
 
-	// 2. ASN特征提取
 	asnFeature := extractASNFeature(input.DestIPASN)
-	features = append(features, float64(asnFeature)) // ASN类别特征
+	features = append(features, float64(asnFeature))
 
-	// 3. GeoIP特征提取
 	countryFeature := extractGeoIPFeature(input.DestGeoIP)
-	features = append(features, float64(countryFeature)) // 国家/地区特征/大洲特征
+	features = append(features, float64(countryFeature))
 
-	// 4. 目标地址特征处理
 	var addressFeature int
 	if input.Host != "" {
-		// 优先使用域名特征
 		addressFeature = extractDomainTypeFeature(input.Host)
 	} else if input.DestIP != "" {
-		// 备用IP特征
 		addressFeature = extractIPFeature(input.DestIP)
 	}
 	features = append(features, float64(addressFeature))
 
-	// 5. 端口特征提取
 	portFeature := extractPortFeature(input.DestPort)
 	features = append(features, float64(portFeature))
 
-	// 6. 流量比例特征 - 帮助区分不同应用类型
 	trafficRatio := 0.0
 	if uploadMB > 0 && downloadMB > 0 {
 		if uploadMB > downloadMB {
-			trafficRatio = downloadMB / uploadMB // 0-1之间，上传为主
+			trafficRatio = downloadMB / uploadMB // 0..1, upload heavy
 		} else {
-			trafficRatio = -uploadMB / downloadMB // -1-0之间，下载为主
+			trafficRatio = -uploadMB / downloadMB // -1..0, download heavy
 		}
 	}
 	features = append(features, trafficRatio)
 
-	// 7. 流量时间密度 - 单位时间内的流量
 	trafficDensity := 0.0
 	if durationMinutes > 0 {
 		trafficDensity = math.Log1p((uploadMB + downloadMB) / durationMinutes)
 	}
 	features = append(features, trafficDensity)
 
-	// 8. 连接类型特征 - 基于端口和地址类型的综合特征
 	connectionTypeFeature := deriveConnectionType(input.DestPort, addressFeature, portFeature)
 	features = append(features, float64(connectionTypeFeature))
 
-	// 9. 元数据哈希特征
 	features = append(features, hashStringToFloat(input.DestIPASN, 500))
 	features = append(features, hashStringToFloat(input.Host, 1000))
 	features = append(features, hashStringToFloat(input.DestIP, 10000))
@@ -736,7 +837,11 @@ func prepareFeatures(input *smart.ModelInput) []float64 {
 	}
 	features = append(features, geoHash)
 
-	// 确保特征向量大小不超过模型预期
+	// the trailing slots are ignored by a model trained before they existed
+	features = append(features, float64(extractExitRegionFeature(input.ExitRegion)))
+	features = append(features, hashStringToFloat(input.ExitASN, 500))
+
+	// the model was trained with MaxFeatureSize slots
 	if len(features) > MaxFeatureSize {
 		features = features[:MaxFeatureSize]
 	}
@@ -751,14 +856,13 @@ func extractASNFeature(asnInfo string) int {
 
 	asnInfo = strings.ToLower(asnInfo)
 
-	// 1. 检查是否匹配已知ASN类别
-	for keyword, category := range asnCategories {
-		if strings.Contains(asnInfo, keyword) {
-			return category
+	// the entry order decides the priority, list a longer keyword before its substrings
+	for _, entry := range asnCategories {
+		if strings.Contains(asnInfo, entry.keyword) {
+			return entry.category
 		}
 	}
 
-	// 2. 尝试提取ASN号码并进行简单分类
 	s := asnInfo
 	if len(s) >= 2 && s[0] == 'a' && s[1] == 's' {
 		s = s[2:]
@@ -768,19 +872,19 @@ func extractASNFeature(asnInfo string) int {
 		j++
 	}
 	if j > 0 {
-		if asnNum, err := strconv.Atoi(s[:j]); err == nil {
-			// 粗略分类ASN号码范围
+		// ParseUint keeps 32 bit builds from erroring on the upper ASN range
+		if asnNum, err := strconv.ParseUint(s[:j], 10, 64); err == nil {
 			switch {
 			case asnNum < 1000:
-				return 50 // 早期分配的ASN
+				return 1 // early allocation era
 			case asnNum < 10000:
-				return 51 // 较早分配的ASN
+				return 2 // older allocation era
 			case asnNum < 50000:
-				return 52 // 中期分配的ASN
+				return 3 // mid allocation era
 			case asnNum < 150000:
-				return 53 // 较新分配的ASN
+				return 4 // newer allocation era
 			default:
-				return 54 // 最新分配的ASN
+				return 5 // latest allocation era
 			}
 		}
 	}
@@ -789,33 +893,50 @@ func extractASNFeature(asnInfo string) int {
 }
 
 func extractGeoIPFeature(geoIPInfo []string) int {
-	if geoIPInfo == nil || len(geoIPInfo) == 0 {
+	if len(geoIPInfo) == 0 {
 		return 0
 	}
 
-	// 1. 尝试提取国家/地区代码
 	countryCode := ""
 	if len(geoIPInfo) > 0 {
 		countryCode = geoIPInfo[0]
 	}
 
-	// 2. 使用预定义类别
 	if category, exists := geoCategories[countryCode]; exists {
 		return category
 	}
 
-	// 3. 其他地区使用简单哈希分类
 	if countryCode != "" {
 		hashValue := 0
 		for _, r := range countryCode {
 			hashValue = hashValue*31 + int(r)
 		}
-		return 30 + (hashValue % 20)
+		// unlisted regions hash into the reserved 1-99 block
+		return 1 + (hashValue % 20)
 	}
 
 	return 0
 }
 
+// extractExitRegionFeature maps the landing region, an empty answer stays 0 (unknown).
+func extractExitRegionFeature(region string) int {
+	if region == "" {
+		return 0
+	}
+	region = strings.ToUpper(region)
+	if category, exists := geoCategories[region]; exists {
+		return category
+	}
+	hashValue := 0
+	for _, r := range region {
+		hashValue = hashValue*31 + int(r)
+	}
+	// unlisted regions hash into the reserved 1-99 block
+	return 1 + (hashValue % 20)
+}
+
+// extractDomainTypeFeature returns the domain feature code of the model: 1 IP literal,
+// 2-3 generic domains, 100-104 service kinds, 110-115 TLD kinds.
 func extractDomainTypeFeature(host string) int {
 	if host == "" {
 		return 0
@@ -823,7 +944,6 @@ func extractDomainTypeFeature(host string) int {
 
 	host = strings.ToLower(host)
 
-	// 1. 检查是否为IP地址形式
 	if strings.Contains(host, "[") {
 		return 1
 	}
@@ -831,36 +951,32 @@ func extractDomainTypeFeature(host string) int {
 		return 1
 	}
 
-	// 2. 关键词匹配（优先级：DNS>API>游戏>通信>流媒体）
+	// keyword matching, the order of allDomainKeywords decides the priority
 	for _, entry := range allDomainKeywords {
 		if strings.Contains(host, entry.keyword) {
 			return entry.category
 		}
 	}
 
-	// 3.1 顶级域名类型检查
 	if strings.HasSuffix(host, ".gov") {
-		return 14
+		return 114
 	} else if strings.HasSuffix(host, ".edu") {
-		return 15
+		return 115
 	} else if strings.HasSuffix(host, ".cn") {
-		return 10
+		return 110
 	} else if strings.HasSuffix(host, ".com") {
-		return 11
+		return 111
 	} else if strings.HasSuffix(host, ".net") {
-		return 12
+		return 112
 	} else if strings.HasSuffix(host, ".org") {
-		return 13
+		return 113
 	}
 
-	// 3.2 域名结构分析
-	if matches := domainRegex.FindStringSubmatch(host); len(matches) > 1 {
-		domainParts := strings.Split(host, ".")
-		if len(domainParts) >= 3 {
-			return 30
-		} else {
-			return 31
+	if domainRegex.MatchString(host) {
+		if strings.Count(host, ".") >= 2 {
+			return 2
 		}
+		return 3
 	}
 
 	return 0
@@ -878,59 +994,54 @@ func extractIPFeature(ipAddr string) int {
 
 	for _, network := range privateIPNetworks {
 		if network.prefix.Contains(addr) {
-			return network.category + 100 // 101-104为不同私有IP类型
+			return network.category
 		}
 	}
 
 	if addr.Is4() {
-		return 110 // IPv4公网地址
+		return 14 // public IPv4
 	} else {
-		return 111 // IPv6公网地址
+		return 15 // public IPv6
 	}
 }
 
+// extractPortFeature returns the port feature code of the model: 1 game, 2 communication,
+// 3-5 game or communication ranges, 6 API, 7 DNS, 8-10 port ranges, otherwise 100+ enum;
+// the special tables win over the enum in the order DNS, API, game, communication.
 func extractPortFeature(port uint16) int {
-
-	// 1.1 DNS服务端口
 	if _, isDNS := dnsServicePorts[port]; isDNS {
-		return 36
+		return 7
 	}
 
-	// 1.2 API服务端口
 	if _, isAPI := apiServicePorts[port]; isAPI {
-		return 35
+		return 6
 	}
 
-	// 1.3 游戏专用端口 - 高延迟敏感
 	if _, isGame := gameSpecificPorts[port]; isGame {
-		return 30
+		return 1
 	}
 
-	// 1.4 通信专用端口 - 实时性要求高
 	if _, isComm := communicationPorts[port]; isComm {
-		return 31
+		return 2
 	}
 
-	// 2. 已知标准端口检查
 	if category, exists := wellKnownPorts[port]; exists {
 		return category
 	}
 
-	// 3.1 游戏/通信端口范围
 	for _, r := range gameCommRanges {
 		if port >= r.min && port <= r.max {
 			switch r.category {
 			case 1:
-				return 32
+				return 3
 			case 2:
-				return 33
+				return 4
 			case 3:
-				return 34
+				return 5
 			}
 		}
 	}
 
-	// 3.2 通用端口范围
 	for _, r := range portRanges {
 		if port >= r.min && port <= r.max {
 			return r.category
@@ -940,71 +1051,55 @@ func extractPortFeature(port uint16) int {
 	return 0
 }
 
+// deriveConnectionType returns the connection type code of the model: 1 web, 2 streaming,
+// 3 realtime, 4 database, 5 file transfer, 6 API, 7 DNS.
 func deriveConnectionType(port uint16, addressFeature, portFeature int) int {
-
-	// 1.1 DNS服务特征
-	if addressFeature == 6 || portFeature == 36 {
+	if addressFeature == 104 || portFeature == 7 {
 		return 7
 	}
-
-	// 1.2 检查DNS专用端口
 	if _, isDNS := dnsServicePorts[port]; isDNS {
 		return 7
 	}
 
-	// 1.3 API服务特征 - 开发和基础设施服务
-	if addressFeature == 5 || portFeature == 35 {
+	if addressFeature == 103 || portFeature == 6 {
 		return 6
 	}
-
-	// 1.4 检查API专用端口
 	if _, isAPI := apiServicePorts[port]; isAPI {
 		return 6
 	}
 
-	// 1.5 游戏/通讯特征 - 实时性服务
-	if addressFeature == 3 || addressFeature == 4 {
+	if addressFeature == 101 || addressFeature == 102 {
 		return 3
 	}
-
-	// 1.6 检查游戏专用端口
 	if _, isGamePort := gameSpecificPorts[port]; isGamePort {
 		return 3
 	}
-
-	// 1.7 检查通信专用端口
 	if _, isCommPort := communicationPorts[port]; isCommPort {
 		return 3
 	}
 
-	// 1.8 流媒体特征 - 带宽敏感服务
-	if addressFeature == 2 {
+	if addressFeature == 100 {
 		return 2
 	}
 
-	// 2.1 网页浏览特征
-	if port == 80 || port == 443 || portFeature == 4 || portFeature == 7 {
+	if port == 80 || port == 443 || portFeature == 103 || portFeature == 106 {
 		return 1
 	}
 
-	// 2.2 数据库访问特征
-	if portFeature == 13 || portFeature == 14 || portFeature == 15 || portFeature == 16 {
+	if portFeature == 112 || portFeature == 113 || portFeature == 114 || portFeature == 115 {
 		return 4
 	}
 
-	// 2.3 文件传输特征
 	if port == 20 || port == 21 || port == 22 || port == 989 || port == 990 {
 		return 5
 	}
 
-	// 3.1 检查游戏/通信端口范围
 	for _, r := range gameCommRanges {
 		if port >= r.min && port <= r.max {
 			return 3
 		}
 	}
 
-	// 3.2 高位端口推测
 	if port > 10000 && port < 65000 {
 		return 3
 	}
@@ -1021,26 +1116,26 @@ func boolToFloat(b bool) float64 {
 
 func CreateModelInputFromStatsRecord(atomicRecord *smart.AtomicStatsRecord, metadata *C.Metadata, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration float64, wildcardTarget string, lossRate, cumulLossRate float64) *smart.ModelInput {
 	input := &smart.ModelInput{
-		Success:                       atomicRecord.Get("success").(int64),
-		Failure:                       atomicRecord.Get("failure").(int64),
-		ConnectTime:                   atomicRecord.Get("connectTime").(int64),
-		Latency:                       atomicRecord.Get("latency").(int64),
-		UploadTotal:                   uploadTotal,
-		HistoryUploadTotal:            atomicRecord.Get("uploadTotal").(float64),
-		MaxuploadRate:                 maxUploadRate,
-		HistoryMaxUploadRate:          atomicRecord.Get("maxUploadRate").(float64),
-		DownloadTotal:                 downloadTotal,
-		HistoryDownloadTotal:          atomicRecord.Get("downloadTotal").(float64),
-		MaxdownloadRate:               maxDownloadRate,
-		HistoryMaxDownloadRate:        atomicRecord.Get("maxDownloadRate").(float64),
-		HistoryConnectionDuration:     atomicRecord.Get("duration").(float64),
-		ConnectionDuration:            connectionDuration,
-		LastUsed:                      atomicRecord.Get("lastUsed").(int64),
-		IsUDP:                         metadata.NetWork == C.UDP,
-		IsTCP:                         metadata.NetWork == C.TCP,
-		LossRate:                      lossRate,
-		CumulLossRate:                 cumulLossRate,
-		EmaLossRate:                   atomicRecord.Get("lossRate").(float64),
+		Success:                   atomicRecord.Success(),
+		Failure:                   atomicRecord.Failure(),
+		ConnectTime:               atomicRecord.ConnectTime(),
+		Latency:                   atomicRecord.Latency(),
+		UploadTotal:               uploadTotal,
+		HistoryUploadTotal:        atomicRecord.UploadTotal(),
+		MaxuploadRate:             maxUploadRate,
+		HistoryMaxUploadRate:      atomicRecord.MaxUploadRate(),
+		DownloadTotal:             downloadTotal,
+		HistoryDownloadTotal:      atomicRecord.DownloadTotal(),
+		MaxdownloadRate:           maxDownloadRate,
+		HistoryMaxDownloadRate:    atomicRecord.MaxDownloadRate(),
+		HistoryConnectionDuration: atomicRecord.Duration(),
+		ConnectionDuration:        connectionDuration,
+		LastUsed:                  atomicRecord.LastUsed(),
+		IsUDP:                     metadata.NetWork == C.UDP,
+		IsTCP:                     metadata.NetWork == C.TCP,
+		LossRate:                  lossRate,
+		CumulLossRate:             cumulLossRate,
+		EmaLossRate:               atomicRecord.LossRate(),
 	}
 
 	if metadata.DstIPASN == "unknown" {
@@ -1056,6 +1151,8 @@ func CreateModelInputFromStatsRecord(atomicRecord *smart.AtomicStatsRecord, meta
 
 	input.DestPort = metadata.DstPort
 	input.DestGeoIP = metadata.DstGeoIP
+	input.ExitRegion = metadata.ExitGeoIP
+	input.ExitASN = metadata.ExitIPASN
 
 	return input
 }

@@ -5,72 +5,51 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/metacubex/mihomo/log"
 )
 
-// parseTransformsContent parses the [transforms] section from the model file.
-// The expected format is as follows:
-//
-// [transforms]
-// [order]
-// 0=success
-// 1=failure
-// 2=connect_time
-// 3=latency
-// 4=upload_mb
-// 5=history_upload_mb
-// 6=maxuploadrate_kb
-// 7=history_maxuploadrate_kb
-// 8=download_mb
-// 9=history_download_mb
-// 10=maxdownloadrate_kb
-// 11=history_maxdownloadrate_kb
-// 12=duration_minutes
-// 13=history_duration_minutes
-// 14=last_used_seconds
-// 15=is_udp
-// 16=is_tcp
-// 17=loss_rate
-// 18=cumul_loss_rate
-// 19=asn_feature
-// 20=country_feature
-// 21=address_feature
-// 22=port_feature
-// 23=traffic_ratio
-// 24=traffic_density
-// 25=connection_type_feature
-// 26=asn_hash
-// 27=host_hash
-// 28=ip_hash
-// 29=geoip_hash
-// ... (index=feature_name, one per line, up to MaxFeatureSize)
-// [/order]
-//
-// [definitions]
-// std_type=StandardScaler
-// std_features=2,3,4,5,6,7,8,9,10,11,12,13,23,24
-// std_mean=...comma separated float values...
-// std_scale=...comma separated float values...
-//
-// robust_type=RobustScaler
-// robust_features=0,1
-// robust_center=...comma separated float values...
-// robust_scale=...comma separated float values...
-// [/definitions]
-//
-// untransformed_features=14:last_used_seconds,15:is_udp,16:is_tcp,17:loss_rate,18:cumul_loss_rate,19:asn_feature,20:country_feature,21:address_feature,22:port_feature,25:connection_type_feature,26:asn_hash,27:host_hash,28:ip_hash,29:geoip_hash
-// transform=true
-// [/transforms]
-//
-// - Each transform block (e.g. std_*, robust_*) must include:
-//   - *_type: the transform type, e.g. "StandardScaler" or "RobustScaler"
-//   - *_features: comma-separated feature indices (int, based on order)
-//   - other parameters: comma-separated float values, length must match features
-// - All indices and parameter arrays must match the feature order and count.
-// - Only features listed in *_features are transformed; others remain unchanged.
-// - The Go parser expects strict adherence to this structure for correct parsing.
+// parseTransformsContent parses the [transforms] section: [order] maps index=feature_name,
+// [definitions] holds scalers keyed "id_param" (std_type, std_features, std_mean, ...);
+// the top level carries untransformed_features and transform. Indices and parameter
+// arrays must match the feature order and count.
+
+// defaultFeatureOrder is the slot order the shipped models are trained with; every caller
+// only reads it, a new slot must be appended at the end.
+var defaultFeatureOrder = map[int]string{
+	0:  "success",
+	1:  "failure",
+	2:  "connect_time",
+	3:  "latency",
+	4:  "upload_mb",
+	5:  "history_upload_mb",
+	6:  "maxuploadrate_kb",
+	7:  "history_maxuploadrate_kb",
+	8:  "download_mb",
+	9:  "history_download_mb",
+	10: "maxdownloadrate_kb",
+	11: "history_maxdownloadrate_kb",
+	12: "duration_minutes",
+	13: "history_duration_minutes",
+	14: "last_used_seconds",
+	15: "is_udp",
+	16: "is_tcp",
+	17: "loss_rate",
+	18: "cumul_loss_rate",
+	19: "asn_feature",
+	20: "country_feature",
+	21: "address_feature",
+	22: "port_feature",
+	23: "traffic_ratio",
+	24: "traffic_density",
+	25: "connection_type_feature",
+	26: "asn_hash",
+	27: "host_hash",
+	28: "ip_hash",
+	29: "geoip_hash",
+	30: "exit_region",
+	31: "exit_asn_hash",
+}
 
 type TransformType string
 
@@ -92,13 +71,6 @@ type FeatureTransforms struct {
 	UntransformedFeatures []string          `json:"untransformed_features"`
 }
 
-var transformPool = sync.Pool{
-	New: func() interface{} {
-		return make([]float64, MaxFeatureSize)
-	},
-}
-
-// 读取transforms参数
 func LoadTransformsFromModel(modelPath string) (*FeatureTransforms, error) {
 	file, err := os.Open(modelPath)
 	if err != nil {
@@ -136,7 +108,7 @@ func LoadTransformsFromModel(modelPath string) (*FeatureTransforms, error) {
 	if startIdx == -1 {
 		return &FeatureTransforms{
 			TransformsEnabled: false,
-			FeatureOrder:      getDefaultFeatureOrder(),
+			FeatureOrder:      defaultFeatureOrder,
 			Transforms:        []TransformParams{},
 		}, nil
 	}
@@ -267,12 +239,11 @@ func parseTransformsContent(content string) (*FeatureTransforms, error) {
 	}
 
 	if len(featureTransforms.FeatureOrder) == 0 {
-		featureTransforms.FeatureOrder = getDefaultFeatureOrder()
+		featureTransforms.FeatureOrder = defaultFeatureOrder
 	} else {
 		expectedCount := MaxFeatureSize
 		if len(featureTransforms.FeatureOrder) != expectedCount {
-			defaultOrder := getDefaultFeatureOrder()
-			for idx, name := range defaultOrder {
+			for idx, name := range defaultFeatureOrder {
 				if _, exists := featureTransforms.FeatureOrder[idx]; !exists {
 					featureTransforms.FeatureOrder[idx] = name
 				}
@@ -374,56 +345,15 @@ func parseStringArray(value string) []string {
 	return result
 }
 
-func getDefaultFeatureOrder() map[int]string {
-	return map[int]string{
-		0:  "success",
-		1:  "failure",
-		2:  "connect_time",
-		3:  "latency",
-		4:  "upload_mb",
-		5:  "history_upload_mb",
-		6:  "maxuploadrate_kb",
-		7:  "history_maxuploadrate_kb",
-		8:  "download_mb",
-		9:  "history_download_mb",
-		10: "maxdownloadrate_kb",
-		11: "history_maxdownloadrate_kb",
-		12: "duration_minutes",
-		13: "history_duration_minutes",
-		14: "last_used_seconds",
-		15: "is_udp",
-		16: "is_tcp",
-		17: "loss_rate",
-		18: "cumul_loss_rate",
-		19: "asn_feature",
-		20: "country_feature",
-		21: "address_feature",
-		22: "port_feature",
-		23: "traffic_ratio",
-		24: "traffic_density",
-		25: "connection_type_feature",
-		26: "asn_hash",
-		27: "host_hash",
-		28: "ip_hash",
-		29: "geoip_hash",
-	}
-}
-
 func (ft *FeatureTransforms) ApplyTransforms(features []float64) []float64 {
 	if ft == nil || !ft.TransformsEnabled || len(ft.Transforms) == 0 {
 		return features
 	}
 
-	var result []float64
-	poolObj := transformPool.Get()
-	if arr, ok := poolObj.([]float64); ok && len(arr) >= len(features) {
-		result = arr[:len(features)]
-	} else {
-		result = make([]float64, len(features))
-	}
+	result := make([]float64, len(features))
 	copy(result, features)
 
-	errors := []string{}
+	var errors []string
 	for i, transform := range ft.Transforms {
 		validTransform := true
 		for _, idx := range transform.FeatureIndices {
@@ -443,10 +373,7 @@ func (ft *FeatureTransforms) ApplyTransforms(features []float64) []float64 {
 		log.Errorln("[Smart] Apply transforms errors: %s", strings.Join(errors, "; "))
 	}
 
-	out := make([]float64, len(result))
-	copy(out, result)
-	transformPool.Put(result)
-	return out
+	return result
 }
 
 func (ft *FeatureTransforms) applyTransformInPlace(features []float64, transform TransformParams) {
@@ -460,7 +387,6 @@ func (ft *FeatureTransforms) applyTransformInPlace(features []float64, transform
 	}
 }
 
-// 标准化
 func (ft *FeatureTransforms) applyStandardScaler(features []float64, transform TransformParams) {
 	mean := transform.Parameters["mean"]
 	scale := transform.Parameters["scale"]
@@ -492,7 +418,6 @@ func (ft *FeatureTransforms) applyStandardScaler(features []float64, transform T
 	}
 }
 
-// 鲁棒缩放
 func (ft *FeatureTransforms) applyRobustScaler(features []float64, transform TransformParams) {
 	center := transform.Parameters["center"]
 	scale := transform.Parameters["scale"]
@@ -510,14 +435,16 @@ func (ft *FeatureTransforms) applyRobustScaler(features []float64, transform Tra
 	}
 }
 
-func (ft *FeatureTransforms) IsCompatibleWith(defaultOrder map[int]string) bool {
+// IsCompatible reports whether a parsed transform file still matches the feature slots
+// of the model; a mismatch means the model was trained with another slot order.
+func (ft *FeatureTransforms) IsCompatible() bool {
 	if ft == nil || !ft.TransformsEnabled {
 		return true
 	}
-	if len(ft.FeatureOrder) != len(defaultOrder) {
+	if len(ft.FeatureOrder) != len(defaultFeatureOrder) {
 		return false
 	}
-	for idx, name := range defaultOrder {
+	for idx, name := range defaultFeatureOrder {
 		if ft.FeatureOrder[idx] != name {
 			return false
 		}

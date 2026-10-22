@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	C "github.com/metacubex/mihomo/constant"
+
 	"github.com/metacubex/sing/common/network"
 )
 

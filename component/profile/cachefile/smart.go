@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	smartInitOnce  sync.Once
-	smartStore     *smart.Store
+	smartInitOnce sync.Once
+	smartStore    *smart.Store
 )
 
 func GetSmartStore() *smart.Store {

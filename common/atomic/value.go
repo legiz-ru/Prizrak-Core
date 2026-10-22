@@ -81,19 +81,3 @@ func NewTypedValue[T any](t T) (v TypedValue[T]) {
 	v.Store(t)
 	return
 }
-
-// TypedValue[map[K]V]
-func (t *TypedValue[T]) Update(f func(old T) (new T)) {
-	for {
-		currentP := t.value.Load()
-		var old T
-		if currentP != nil {
-			old = *currentP
-		}
-
-		newValue := f(old)
-		if t.value.CompareAndSwap(currentP, &newValue) {
-			return
-		}
-	}
-}

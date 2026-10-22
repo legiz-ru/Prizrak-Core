@@ -17,6 +17,9 @@ type firstReadCallBackConn struct {
 }
 
 func (c *firstReadCallBackConn) Read(b []byte) (n int, err error) {
+	if c.read.Load() {
+		return c.Conn.Read(b)
+	}
 	defer func() {
 		if c.read.CompareAndSwap(false, true) {
 			c.callback(err)
@@ -26,6 +29,9 @@ func (c *firstReadCallBackConn) Read(b []byte) (n int, err error) {
 }
 
 func (c *firstReadCallBackConn) ReadBuffer(buffer *buf.Buffer) (err error) {
+	if c.read.Load() {
+		return c.Conn.ReadBuffer(buffer)
+	}
 	defer func() {
 		if c.read.CompareAndSwap(false, true) {
 			c.callback(err)
@@ -46,6 +52,10 @@ func (c *firstReadCallBackConn) ReaderReplaceable() bool {
 	return c.read.Load()
 }
 
+func (c *firstReadCallBackConn) ReaderPossiblyReplaceable() bool {
+	return !c.read.Load()
+}
+
 var _ N.ExtendedConn = (*firstReadCallBackConn)(nil)
 
 func NewFirstReadCallBackConn(c C.Conn, callback func(error)) C.Conn {
@@ -64,13 +74,16 @@ type firstReadCallBackPacketConn struct {
 
 func (c *firstReadCallBackPacketConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	n, err = c.PacketConn.WriteTo(b, addr)
-	if err == nil {
+	if err == nil && c.firstWrite.Load() == 0 {
 		c.firstWrite.CompareAndSwap(0, time.Now().UnixNano())
 	}
 	return
 }
 
 func (c *firstReadCallBackPacketConn) onRead() {
+	if c.called.Load() {
+		return
+	}
 	if first := c.firstWrite.Load(); first != 0 {
 		if c.called.CompareAndSwap(false, true) {
 			latency := (time.Now().UnixNano() - first) / int64(time.Millisecond)

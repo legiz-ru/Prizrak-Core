@@ -1,6 +1,7 @@
 package smart
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"errors"
@@ -11,33 +12,60 @@ import (
 	"time"
 
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 
 	"github.com/metacubex/http"
 )
 
 const (
-	probeDefaultBlockTTL   = 10 * time.Minute
-	probeTransientBlockTTL = 5 * time.Minute
-	probeRegionalBlockTTL  = 30 * time.Minute
-	probeMinBlockTTL       = 60 * time.Second
-
 	responseProbeDownloadThresholdMB = 0.03
 
-	ProbeTimeout                 = 8 * time.Second
-	probeMinIntervalPerNode      = 120 * time.Second
-	probeMinIntervalAfterFailure = 30 * time.Second
-	probeRecentFailureWindow     = 10 * time.Minute
-	probePerTargetPerMinute      = 6
+	ProbeTimeout = 8 * time.Second
+
+	probePerTargetPerMinute = 6
 
 	probeGlobalPerMinute = 120
 	probeGlobalBurst     = 10
 	probeMaxInflight     = 4
 
-	probeHostBlindThreshold = 6
-	probeHostBlindWindow    = 30 * time.Minute
-
 	probeMaxEntries = 4096
 	probePath       = "/robots.txt"
+
+	ProbeBodyLimit = 4096
+
+	// a refusal page is usually sent at once, waiting longer is not worth the probe
+	ProbeBodyWait = time.Second
+
+	probeMaxBlockTTL = 30 * time.Minute
+
+	ReasonForbidden     = "forbidden"
+	ReasonOriginError   = "origin error"
+	ReasonEdgeError     = "edge error"
+	ReasonCertAuthority = "unknown certificate authority"
+	ReasonCertHostname  = "certificate hostname mismatch"
+)
+
+// A host that several independent nodes refuse, and that no node has answered since its
+// last success, is held until the ttl; one probation refusal then arms the next hold.
+const (
+	hostBackoffMinNodes   = 3
+	hostBackoffMaxEntries = 4096
+)
+
+// The intervals are variables so a test can shrink them instead of waiting them out.
+var (
+	probeDefaultBlockTTL   = 10 * time.Minute
+	probeTransientBlockTTL = 5 * time.Minute
+	probeRegionalBlockTTL  = 30 * time.Minute
+	probeMinBlockTTL       = 60 * time.Second
+
+	probeMinIntervalPerNode      = 120 * time.Second
+	probeMinIntervalAfterFailure = 30 * time.Second
+	probeRecentFailureWindow     = 10 * time.Minute
+	probeTrimInterval            = time.Minute
+
+	hostBackoffWindow = time.Hour
+	hostBackoffTTL    = 30 * time.Minute
 )
 
 var (
@@ -48,6 +76,8 @@ var (
 	}
 
 	probeInflight = make(chan struct{}, probeMaxInflight)
+
+	hostBackoffTable hostBackoff
 )
 
 type VerdictAction uint8
@@ -60,14 +90,17 @@ const (
 
 type (
 	Verdict struct {
-		Action VerdictAction
-		TTL    time.Duration
-		Reason string
+		Action         VerdictAction
+		TTL            time.Duration
+		Reason         string
+		ControlSuccess bool
+		Unproven       bool
 	}
 
 	ProbeResult struct {
 		StatusCode int
 		Header     http.Header
+		Body       []byte
 	}
 
 	StatusProber interface {
@@ -75,8 +108,15 @@ type (
 	}
 
 	probeNodeState struct {
-		lastProbe   time.Time
-		lastFailure time.Time
+		lastProbe     time.Time
+		lastFailure   time.Time
+		pendingSince  time.Time
+		unprovenSince time.Time
+	}
+
+	probeNodeKey struct {
+		target string
+		node   string
 	}
 
 	probeWindow struct {
@@ -84,24 +124,35 @@ type (
 		count int
 	}
 
-	probeHostState struct {
-		windowStart time.Time
-		answers     int
-		refusals    int
-		blindUntil  time.Time
+	ProbeThrottle struct {
+		mu       sync.Mutex
+		nodes    map[probeNodeKey]*probeNodeState
+		targets  map[string]*probeWindow
+		lastTrim time.Time
 	}
 
-	ProbeThrottle struct {
-		mu      sync.Mutex
-		nodes   map[string]*probeNodeState
-		targets map[string]*probeWindow
-		hosts   map[string]*probeHostState
+	hostBackoffKey struct {
+		config string
+		group  string
+		host   string
+	}
+
+	hostBackoffState struct {
+		nodes     map[string]int64
+		updated   int64
+		until     int64
+		probation bool
+	}
+
+	hostBackoff struct {
+		mu      sync.RWMutex
+		entries map[hostBackoffKey]hostBackoffState
 	}
 )
 
 // ClassifyResponse turns the answer of a node into a verdict: only what identifies the node
 // itself may record a block, a redirect that leaves the host must neither record nor clear.
-func ClassifyResponse(status int, header http.Header, now time.Time) Verdict {
+func ClassifyResponse(status int, header http.Header, body []byte, now time.Time) Verdict {
 	switch {
 	case isChallenge(header):
 		return record(probeDefaultBlockTTL, "challenge")
@@ -111,13 +162,18 @@ func ClassifyResponse(status int, header http.Header, now time.Time) Verdict {
 		return record(rateLimitTTL(header, now), "rate limited")
 	case status == http.StatusOK && strings.TrimSpace(header.Get("X-Ratelimit-Remaining")) == "0":
 		return record(rateLimitTTL(header, now), "quota exhausted")
+	case IsRegionUnavailableText(body):
+		return record(probeRegionalBlockTTL, ReasonRegionUnavailable)
 	case status == http.StatusForbidden:
-		return record(probeDefaultBlockTTL, "forbidden")
+		return record(probeDefaultBlockTTL, ReasonForbidden)
 	case status == http.StatusUnavailableForLegalReasons:
 		return record(probeRegionalBlockTTL, "unavailable for legal reasons")
 	case status == http.StatusMisdirectedRequest:
 		return ignore("misdirected request")
 	case status >= 300 && status < 400:
+		if IsRegionUnavailableLocation(header.Get("Location")) {
+			return record(probeRegionalBlockTTL, ReasonRegionUnavailable)
+		}
 		return ignore("redirect")
 	case status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented:
 		return ignore("method not allowed")
@@ -125,12 +181,25 @@ func ClassifyResponse(status int, header http.Header, now time.Time) Verdict {
 		if _, ok := parseRetryAfter(header.Get("Retry-After"), now); ok {
 			return record(rateLimitTTL(header, now), "overloaded")
 		}
-		return record(probeTransientBlockTTL, "origin error")
+		if isEdgeAnswer(body) {
+			return record(probeTransientBlockTTL, ReasonEdgeError)
+		}
+		return record(probeTransientBlockTTL, ReasonOriginError)
 	case status >= 200:
-		return reachable("answered")
+		return reachable("answered", status >= 200 && status < 300)
 	default:
 		return ignore("unknown status")
 	}
+}
+
+// RegionEvidence reports whether a refusal may be pooled per region: an answer that blames
+// the region, or a refusal only a cross region comparison can tell apart from an outage.
+func RegionEvidence(reason string) bool {
+	switch reason {
+	case ReasonRegionUnavailable, ReasonForbidden, ReasonOriginError:
+		return true
+	}
+	return false
 }
 
 func ClassifyProbeError(err error) Verdict {
@@ -139,19 +208,19 @@ func ClassifyProbeError(err error) Verdict {
 	}
 	var hostnameErr x509.HostnameError
 	if errors.As(err, &hostnameErr) {
-		return record(probeDefaultBlockTTL, "certificate hostname mismatch")
+		return record(probeDefaultBlockTTL, ReasonCertHostname)
 	}
 	var authorityErr x509.UnknownAuthorityError
 	if errors.As(err, &authorityErr) {
-		return record(probeDefaultBlockTTL, "unknown certificate authority")
+		return record(probeDefaultBlockTTL, ReasonCertAuthority)
 	}
 	if isTimeout(err) {
 		return record(probeTransientBlockTTL, "probe timed out")
 	}
-	return ignore("probe failed")
+	return unproven("probe failed")
 }
 
-// A cancelled probe is not a timeout, it comes from the group shutting down instead of the node.
+// A cancelled probe means the group is shutting down, not that the node timed out.
 func isTimeout(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
@@ -169,6 +238,9 @@ func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 		if seconds <= 0 {
 			return 0, false
 		}
+		if seconds > int64(probeMaxBlockTTL/time.Second) {
+			return probeMaxBlockTTL, true
+		}
 		return time.Duration(seconds) * time.Second, true
 	}
 	if t, err := http.ParseTime(value); err == nil && t.After(now) {
@@ -182,9 +254,21 @@ func rateLimitTTL(header http.Header, now time.Time) time.Duration {
 		return d
 	}
 	if epoch, err := strconv.ParseInt(strings.TrimSpace(header.Get("X-Ratelimit-Reset")), 10, 64); err == nil && epoch > now.Unix() {
-		return time.Duration(epoch-now.Unix()) * time.Second
+		seconds := epoch - now.Unix()
+		if seconds > int64(probeMaxBlockTTL/time.Second) {
+			return probeMaxBlockTTL
+		}
+		return time.Duration(seconds) * time.Second
 	}
 	return probeDefaultBlockTTL
+}
+
+// A CDN answers a broken origin with its own error page that every node gets: the refusal
+// says nothing about a node or a region even though it is recorded as one.
+func isEdgeAnswer(body []byte) bool {
+	return bytes.Contains(body, []byte("cf-error-details")) ||
+		bytes.Contains(body, []byte("cf-error-overview")) ||
+		bytes.Contains(body, []byte("cf.errors.css"))
 }
 
 func isChallenge(header http.Header) bool {
@@ -210,8 +294,12 @@ func ignore(reason string) Verdict {
 	return Verdict{Action: VerdictIgnore, Reason: reason}
 }
 
-func reachable(reason string) Verdict {
-	return Verdict{Action: VerdictReachable, Reason: reason}
+func unproven(reason string) Verdict {
+	return Verdict{Action: VerdictIgnore, Reason: reason, Unproven: true}
+}
+
+func reachable(reason string, controlSuccess bool) Verdict {
+	return Verdict{Action: VerdictReachable, Reason: reason, ControlSuccess: controlSuccess}
 }
 
 func record(ttl time.Duration, reason string) Verdict {
@@ -226,10 +314,23 @@ func record(ttl time.Duration, reason string) Verdict {
 
 func (t *ProbeThrottle) ensureMaps() {
 	if t.nodes == nil {
-		t.nodes = make(map[string]*probeNodeState)
+		t.nodes = make(map[probeNodeKey]*probeNodeState)
 		t.targets = make(map[string]*probeWindow)
-		t.hosts = make(map[string]*probeHostState)
 	}
+}
+
+func (t *ProbeThrottle) nodeState(target, node string) *probeNodeState {
+	return t.nodes[probeNodeKey{target: target, node: node}]
+}
+
+func (t *ProbeThrottle) ensureNodeState(target, node string, now time.Time) *probeNodeState {
+	key := probeNodeKey{target: target, node: node}
+	state := t.nodes[key]
+	if state == nil {
+		state = &probeNodeState{lastProbe: now}
+		t.nodes[key] = state
+	}
+	return state
 }
 
 func (t *ProbeThrottle) AllowNode(target, node string, now time.Time) bool {
@@ -237,9 +338,13 @@ func (t *ProbeThrottle) AllowNode(target, node string, now time.Time) bool {
 	defer t.mu.Unlock()
 
 	t.ensureMaps()
-	t.trim(now)
+	if (len(t.nodes) > probeMaxEntries || len(t.targets) > probeMaxEntries) &&
+		(t.lastTrim.IsZero() || now.Sub(t.lastTrim) >= probeTrimInterval) {
+		t.trim(now)
+		t.lastTrim = now
+	}
 
-	key := probeKey(target, node)
+	key := probeNodeKey{target: target, node: node}
 	state := t.nodes[key]
 	if state != nil {
 		interval := probeMinIntervalPerNode
@@ -269,42 +374,101 @@ func (t *ProbeThrottle) AllowNode(target, node string, now time.Time) bool {
 	return true
 }
 
-// A host that refuses every node without ever answering says nothing about a single node, so its
-// records are dropped while it stays blind; this keeps probe hostile hosts from draining the pool.
-func (t *ProbeThrottle) AllowHostRecord(host string, verdict Verdict, now time.Time) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.ensureMaps()
-	state := t.hosts[host]
-	if state == nil {
-		state = &probeHostState{windowStart: now}
-		t.hosts[host] = state
-	}
-	if now.Sub(state.windowStart) >= probeHostBlindWindow {
-		state.windowStart = now
-		state.answers = 0
-		state.refusals = 0
-	}
-
-	if verdict.Action == VerdictReachable {
-		state.answers++
-		state.refusals = 0
-		state.blindUntil = time.Time{}
+// hostRefusalEvidence: refusals that blame the host itself, not a per node quota.
+func hostRefusalEvidence(reason string) bool {
+	switch reason {
+	case ReasonRegionUnavailable, ReasonForbidden, ReasonOriginError, ReasonCertAuthority, ReasonCertHostname:
 		return true
 	}
-	if now.Before(state.blindUntil) {
+	return false
+}
+
+// NoteHostRefusal records a refusal, true while the host is held back.
+func NoteHostRefusal(config, group, host, node, reason string) bool {
+	if host == "" || node == "" || !hostRefusalEvidence(reason) {
 		return false
 	}
-	if state.answers > 0 {
+	now := time.Now()
+	nowNano := now.UnixNano()
+
+	hostBackoffTable.mu.Lock()
+	defer hostBackoffTable.mu.Unlock()
+
+	if hostBackoffTable.entries == nil {
+		hostBackoffTable.entries = make(map[hostBackoffKey]hostBackoffState)
+	}
+	key := hostBackoffKey{config: config, group: group, host: host}
+	state, exists := hostBackoffTable.entries[key]
+	if state.until > nowNano {
+		log.Debugln("[Smart] Host backoff [%s] node [%s] dropped (%s)", host, node, reason)
 		return true
 	}
-	state.refusals++
-	if state.refusals >= probeHostBlindThreshold {
-		state.blindUntil = now.Add(probeHostBlindWindow)
+	if state.probation {
+		state.probation = false
+		state.nodes = nil
+		state.updated = nowNano
+		state.until = now.Add(hostBackoffTTL).UnixNano()
+		hostBackoffTable.entries[key] = state
+		log.Debugln("[Smart] Host backoff [%s] node [%s] re-armed (%s)", host, node, reason)
+		return true
+	}
+	if !exists && len(hostBackoffTable.entries) >= hostBackoffMaxEntries {
+		hostBackoffTable.pruneLocked(nowNano)
+		if len(hostBackoffTable.entries) >= hostBackoffMaxEntries {
+			return false
+		}
+	}
+	if state.nodes == nil {
+		state.nodes = make(map[string]int64)
+	}
+	state.nodes[node] = nowNano
+	for seen, at := range state.nodes {
+		if nowNano-at > int64(hostBackoffWindow) {
+			delete(state.nodes, seen)
+		}
+	}
+	state.updated = nowNano
+	if len(state.nodes) < hostBackoffMinNodes {
+		hostBackoffTable.entries[key] = state
 		return false
 	}
+	state.nodes = nil
+	state.probation = true
+	state.until = now.Add(hostBackoffTTL).UnixNano()
+	hostBackoffTable.entries[key] = state
+	log.Debugln("[Smart] Host backoff [%s] node [%s] raised (%s)", host, node, reason)
 	return true
+}
+
+// HostBackedOff reports a held host; an answer drops its evidence and the ttl expires it.
+func HostBackedOff(config, group, host string) bool {
+	if host == "" {
+		return false
+	}
+	nowNano := time.Now().UnixNano()
+	hostBackoffTable.mu.RLock()
+	defer hostBackoffTable.mu.RUnlock()
+	return hostBackoffTable.entries[hostBackoffKey{config: config, group: group, host: host}].until > nowNano
+}
+
+// NoteHostAnswer drops the evidence once a node serves the host, failures start fresh.
+func NoteHostAnswer(config, group, host string) {
+	if host == "" {
+		return
+	}
+	hostBackoffTable.mu.Lock()
+	defer hostBackoffTable.mu.Unlock()
+	if hostBackoffTable.entries != nil {
+		delete(hostBackoffTable.entries, hostBackoffKey{config: config, group: group, host: host})
+	}
+}
+
+func (t *hostBackoff) pruneLocked(nowNano int64) {
+	for key, state := range t.entries {
+		if nowNano-state.updated > int64(hostBackoffWindow) {
+			delete(t.entries, key)
+		}
+	}
 }
 
 func (t *ProbeThrottle) NoteFailure(target, node string, now time.Time) {
@@ -313,13 +477,70 @@ func (t *ProbeThrottle) NoteFailure(target, node string, now time.Time) {
 
 	t.ensureMaps()
 
-	key := probeKey(target, node)
+	key := probeNodeKey{target: target, node: node}
 	state := t.nodes[key]
 	if state == nil {
 		state = &probeNodeState{lastProbe: now}
 		t.nodes[key] = state
 	}
 	state.lastFailure = now
+}
+
+func (t *ProbeThrottle) MarkPending(target, node string, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.ensureMaps()
+
+	state := t.ensureNodeState(target, node, now)
+	state.pendingSince = now
+	state.unprovenSince = time.Time{}
+}
+
+func (t *ProbeThrottle) ClearPending(target, node string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if state := t.nodeState(target, node); state != nil {
+		state.pendingSince = time.Time{}
+	}
+}
+
+func (t *ProbeThrottle) PendingFor(target, node string, now time.Time) time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state := t.nodeState(target, node)
+	if state == nil || state.pendingSince.IsZero() {
+		return 0
+	}
+	return now.Sub(state.pendingSince)
+}
+
+func (t *ProbeThrottle) MarkUnproven(target, node string, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.ensureMaps()
+
+	t.ensureNodeState(target, node, now).unprovenSince = now
+}
+
+func (t *ProbeThrottle) ClearUnproven(target, node string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if state := t.nodeState(target, node); state != nil {
+		state.unprovenSince = time.Time{}
+	}
+}
+
+func (t *ProbeThrottle) Unproven(target, node string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state := t.nodeState(target, node)
+	return state != nil && !state.unprovenSince.IsZero()
 }
 
 func (t *ProbeThrottle) trim(now time.Time) {
@@ -337,17 +558,6 @@ func (t *ProbeThrottle) trim(now time.Time) {
 			}
 		}
 	}
-	if len(t.hosts) > probeMaxEntries {
-		for host, state := range t.hosts {
-			if now.Sub(state.windowStart) >= probeHostBlindWindow {
-				delete(t.hosts, host)
-			}
-		}
-	}
-}
-
-func probeKey(target, node string) string {
-	return target + "\x00" + node
 }
 
 func AllowGlobalProbe(now time.Time) bool {

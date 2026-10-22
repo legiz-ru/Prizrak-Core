@@ -38,15 +38,13 @@ func TestGetTCPStats_Loopback(t *testing.T) {
 		}
 	}()
 
-	// Dial
 	client, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatalf("failed to dial: %v", err)
 	}
 	defer client.Close()
 
-	// Transfer some data to populate TCP counters
-	payload := make([]byte, 1024*1024) // 1MB
+	payload := make([]byte, 1024*1024)
 	for i := range payload {
 		payload[i] = byte(i % 256)
 	}
@@ -75,18 +73,15 @@ func TestGetTCPStats_Loopback(t *testing.T) {
 	t.Logf("Platform: %s, SegsOut: %d, RetransSegs: %d, BytesSent: %d, BytesRetrans: %d, LossRate: %.4f",
 		runtime.GOOS, stats.SegsOut, stats.RetransSegs, stats.BytesSent, stats.BytesRetrans, lossRate)
 
-	// On loopback, loss rate should be 0
 	if lossRate != 0 {
 		t.Errorf("expected 0 loss rate on loopback, got %.4f", lossRate)
 	}
 
-	// At least one of SegsOut or BytesSent should be populated
-	// (FreeBSD uses TCP_PERF_INFO which fills BytesSent; Linux uses TCP_INFO which fills SegsOut)
+	// FreeBSD fills BytesSent through TCP_PERF_INFO, Linux fills SegsOut through TCP_INFO
 	if stats.SegsOut == 0 && stats.BytesSent == 0 {
 		t.Error("expected non-zero sent statistics (SegsOut or BytesSent)")
 	}
 
-	// If BytesSent is populated, ensure BytesRetrans is also meaningful
 	if stats.BytesSent > 0 && stats.BytesRetrans > stats.BytesSent {
 		t.Errorf("BytesRetrans (%d) exceeds BytesSent (%d)", stats.BytesRetrans, stats.BytesSent)
 	}

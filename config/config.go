@@ -280,6 +280,7 @@ type RawTun struct {
 	Enable              bool       `yaml:"enable" json:"enable"`
 	Device              string     `yaml:"device" json:"device"`
 	Stack               C.TUNStack `yaml:"stack" json:"stack"`
+	DNSMode             string     `yaml:"dns-mode" json:"dns-mode"`
 	DNSHijack           []string   `yaml:"dns-hijack" json:"dns-hijack"`
 	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
 	AutoDetectInterface bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
@@ -492,29 +493,29 @@ func Parse(buf []byte) (*Config, error) {
 
 func DefaultRawConfig() *RawConfig {
 	return &RawConfig{
-		AllowLan:          false,
-		BindAddress:       "*",
-		LanAllowedIPs:     []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
-		IPv6:              true,
-		Mode:              T.Rule,
-		GeoAutoUpdate:     false,
-		GeoUpdateInterval: 24,
-		GeodataMode:       geodata.GeodataMode(),
-		GeodataLoader:     "memconservative",
-		LgbmAutoUpdate:    false,
-		LgbmUpdateInterval:72,
-		LgbmUrl:           lightgbm.GetModelDownloadURL(),
-		UnifiedDelay:      false,
-		Authentication:    []string{},
-		LogLevel:          log.INFO,
-		Hosts:             map[string]any{},
-		Rule:              []string{},
-		Proxy:             []map[string]any{},
-		ProxyGroup:        []map[string]any{},
-		TCPConcurrent:     false,
-		FindProcessMode:   process.FindProcessStrict,
-		GlobalUA:          "clash.meta/" + C.Version,
-		ETagSupport:       true,
+		AllowLan:           false,
+		BindAddress:        "*",
+		LanAllowedIPs:      []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
+		IPv6:               true,
+		Mode:               T.Rule,
+		GeoAutoUpdate:      false,
+		GeoUpdateInterval:  24,
+		GeodataMode:        geodata.GeodataMode(),
+		GeodataLoader:      "memconservative",
+		LgbmAutoUpdate:     false,
+		LgbmUpdateInterval: 72,
+		LgbmUrl:            lightgbm.GetModelDownloadURL(),
+		UnifiedDelay:       false,
+		Authentication:     []string{},
+		LogLevel:           log.INFO,
+		Hosts:              map[string]any{},
+		Rule:               []string{},
+		Proxy:              []map[string]any{},
+		ProxyGroup:         []map[string]any{},
+		TCPConcurrent:      false,
+		FindProcessMode:    process.FindProcessStrict,
+		GlobalUA:           "clash.meta/" + C.Version,
+		ETagSupport:        true,
 		DNS: RawDNS{
 			Enable:         false,
 			IPv6:           false,
@@ -1713,6 +1714,7 @@ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
 		Enable:              rawTun.Enable,
 		Device:              rawTun.Device,
 		Stack:               rawTun.Stack,
+		DNSMode:             rawTun.DNSMode,
 		DNSHijack:           rawTun.DNSHijack,
 		AutoRoute:           rawTun.AutoRoute,
 		AutoDetectInterface: rawTun.AutoDetectInterface,

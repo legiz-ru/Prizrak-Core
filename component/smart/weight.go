@@ -5,13 +5,18 @@ import (
 	"time"
 )
 
+const (
+	AllowedWeight         = 0.4
+	DefaultMinSampleCount = 2
+)
+
 type sceneKind int
 
 const (
-	sceneWeb         sceneKind = iota // 0
-	sceneInteractive                  // 1
-	sceneStreaming                    // 2
-	sceneTransfer                     // 3
+	sceneWeb sceneKind = iota
+	sceneInteractive
+	sceneStreaming
+	sceneTransfer
 )
 
 var presetSceneParams = [4]SceneParams{
@@ -21,64 +26,58 @@ var presetSceneParams = [4]SceneParams{
 	sceneTransfer:    {0.5, 0.2, 0.3, 1.8, 0.7, 0.9, 1.0, 0.1},
 }
 
-type (
-	SceneParams struct {
-		successRateWeight float64
-		connectTimeWeight float64
-		latencyWeight     float64
-		trafficWeight     float64
-		durationWeight    float64
-		qualityWeight     float64
-		lossWeight        float64
-		minDecayFactor    float64
-	}
-)
-
-type ModelInput struct {
-	// 节点历史性能指标
-	Success                    int64    // 成功次数
-	Failure                    int64    // 失败次数
-	ConnectTime                int64    // 连接时间(毫秒)
-	Latency                    int64    // 延迟(毫秒)
-
-	// 上传相关特征
-	UploadTotal                float64  // 上传流量(字节)
-	HistoryUploadTotal         float64  // 历史上传流量(字节)
-	MaxuploadRate              float64  // 最大上传速率(字节/秒)
-	HistoryMaxUploadRate       float64  // 历史最大上传速率(字节/秒)
-
-	// 下载相关特征
-	DownloadTotal              float64  // 下载流量(字节)
-	HistoryDownloadTotal       float64  // 历史下载流量(字节)
-	MaxdownloadRate            float64  // 最大下载速率(字节/秒)
-	HistoryMaxDownloadRate     float64  // 历史最大下载速率(字节/秒)
-
-	ConnectionDuration         float64  // 连接持续时间(分钟)
-	HistoryConnectionDuration  float64  // 历史平均连接持续时间(分钟)
-	LastUsed                   int64    // 上次使用时间
-
-	// 连接特征
-	IsUDP                      bool      // 是否UDP连接
-	IsTCP                      bool      // 是否TCP连接
-	ConnectionFailed           bool      // 本次连接是否失败（用于区分是复用还是连接失败）
-	LossRate                   float64   // 单次连接丢包率 0.0~1.0, 0=无丢包/不支持/UDP
-	CumulLossRate              float64   // 历史累计丢包率 cumulRetrans/cumulSent
-	EmaLossRate                float64   // 历史EMA丢包率, 自动衰减反映近期趋势
-
-	// 元数据特征
-	DestIPASN                  string    // 目标IP的ASN信息
-	Host                       string    // 域名信息
-	DestIP                     string    // 目标IP地址
-	DestPort                   uint16    // 目标端口
-	DestGeoIP                  []string  // 目标IP的地理位置信息
-
-	GroupName                  string    // 策略组名称
-	NodeName                   string    // 节点名称
+type SceneParams struct {
+	successRateWeight float64
+	connectTimeWeight float64
+	latencyWeight     float64
+	trafficWeight     float64
+	durationWeight    float64
+	qualityWeight     float64
+	lossWeight        float64
+	minDecayFactor    float64
 }
 
-// 计算权重
+type ModelInput struct {
+	Success     int64 // successes
+	Failure     int64 // failures
+	ConnectTime int64 // connect time (ms)
+	Latency     int64 // latency (ms)
+
+	UploadTotal          float64 // uploaded (MB)
+	HistoryUploadTotal   float64 // uploaded total (MB)
+	MaxuploadRate        float64 // max upload rate (KB/s)
+	HistoryMaxUploadRate float64 // max upload rate total (KB/s)
+
+	DownloadTotal          float64 // downloaded (MB)
+	HistoryDownloadTotal   float64 // downloaded total (MB)
+	MaxdownloadRate        float64 // max download rate (KB/s)
+	HistoryMaxDownloadRate float64 // max download rate total (KB/s)
+
+	ConnectionDuration        float64 // duration (minutes)
+	HistoryConnectionDuration float64 // average duration (minutes)
+	LastUsed                  int64   // last used timestamp
+
+	IsUDP            bool    // UDP connection
+	IsTCP            bool    // TCP connection
+	ConnectionFailed bool    // this connection failed, a reuse counts as success
+	LossRate         float64 // judged window loss 0.0-1.0, 0 = no window / unsupported / UDP
+	CumulLossRate    float64 // cumulative loss rate cumulRetrans/cumulSent
+	EmaLossRate      float64 // EMA loss rate, decays and reflects the recent trend
+
+	DestIPASN string   // ASN of the target IP
+	Host      string   // target host
+	DestIP    string   // target IP
+	DestPort  uint16   // target port
+	DestGeoIP []string // geolocation of the target IP
+
+	ExitRegion string // region the node really lands in for this target
+	ExitASN    string // network the node runs on for this target
+
+	GroupName string // group name
+	NodeName  string // node name
+}
+
 func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) {
-	// 1. 数据准备
 	success := input.Success
 	failure := input.Failure
 	connectTime := input.ConnectTime
@@ -95,24 +94,20 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 	durationMinutes := input.ConnectionDuration
 	historyConnectionDuration := input.HistoryConnectionDuration
 	lastConnectTimestamp := input.LastUsed
-	
-	// 2. 检查样本数量
+
 	total := success + failure
 	if total < DefaultMinSampleCount {
 		return 0, false
 	}
 
-	// 3. 场景识别和参数获取
 	scene := identifyConnectionScene(isUDP, latency, uploadMB, downloadMB, maxUploadRateKB, maxDownloadRateKB, durationMinutes)
 	params := presetSceneParams[scene]
 
-	// 4. 计算时间衰减因子
 	timeFactor := 1.0
 	if lastConnectTimestamp > 0 {
 		timeFactor = GetTimeDecayWithCache(lastConnectTimestamp, time.Now().Unix(), params.minDecayFactor)
 	}
 
-	// 5. 对所有历史数据应用时间衰减
 	decayedSuccess := float64(success) * timeFactor
 	decayedFailure := float64(failure) * timeFactor
 	decayedTotal := decayedSuccess + decayedFailure
@@ -123,7 +118,6 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 		decayedTotal = decayedSuccess + decayedFailure
 	}
 
-	// 6. 基础指标计算
 	if connectTime == 0 {
 		if !input.ConnectionFailed {
 			connectTime = 1
@@ -147,29 +141,24 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 	connectScore = math.Min(0.8, math.Max(0.3, connectScore))
 	latencyScore = math.Min(0.8, math.Max(0.3, latencyScore))
 
-	// 7. UDP协议调整
 	if isUDP {
 		params.latencyWeight = math.Min(0.5, params.latencyWeight*1.2)
 		params.successRateWeight = math.Min(0.6, params.successRateWeight*1.1)
 		params.connectTimeWeight = 1.0 - params.successRateWeight - params.latencyWeight
 	}
 
-	// 8. 连接类型判断
 	isShortConnection := durationMinutes <= 1
 	isLongConnection := durationMinutes > 10
 
-	// 9. 基础权重计算
 	baseWeight := (successRate * params.successRateWeight) +
 		(connectScore * params.connectTimeWeight) +
 		(latencyScore * params.latencyWeight)
 
-	// 10. 流量因子计算
 	var trafficFactor float64 = 0
 	if uploadMB > 0 || downloadMB > 0 {
 		uploadFactor := calculateTrafficFactor(uploadMB, maxUploadRateKB, durationMinutes, historyMaxUploadRate, historyUploadTotal, historyConnectionDuration, isShortConnection)
 		downloadFactor := calculateTrafficFactor(downloadMB, maxDownloadRateKB, durationMinutes, historyMaxDownloadRate, historyDownloadTotal, historyConnectionDuration, isShortConnection)
 
-		// 根据场景调整上下行权重
 		var uploadWeight, downloadWeight float64
 		if scene == sceneStreaming {
 			uploadWeight, downloadWeight = 0.2, 0.8
@@ -182,7 +171,6 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 		trafficFactor = (uploadFactor * uploadWeight) + (downloadFactor * downloadWeight)
 	}
 
-	// 11. 持续时间因子计算
 	var durationFactor float64 = 0.1
 	if durationMinutes > 0 {
 		if isShortConnection {
@@ -194,7 +182,6 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 		}
 	}
 
-	// 12. 质量加成计算
 	var qualityBonus float64 = 0
 
 	if latency > 0 && latency < 100 {
@@ -212,11 +199,10 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 
 	qualityBonus = math.Min(0.3, qualityBonus)
 
-	// 13. 丢包率衰减
-	// currentPenalty:  单次连接丢包，敏感但易波动
-	// cumulPenalty:    历史累计丢包，稳定但永不衰减
-	// emaPenalty:      EMA丢包，自动衰减反映近期趋势
-	// improvementFactor: EMA < 累计 → 质量在改善，降低累计的惩罚权重
+	// currentPenalty: judged window loss, sensitive but floor gated
+	// cumulPenalty:   cumulative loss, stable but never decays
+	// emaPenalty:     EMA loss, decays and reflects the recent trend
+	// improvementFactor: EMA < cumulative means the quality is recovering
 	lossFactor := 0.0
 	if input.LossRate > 0 || input.CumulLossRate > 0 {
 		currentPenalty := 0.0
@@ -234,17 +220,17 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 			emaPenalty = 1.0 - math.Exp(-input.EmaLossRate*50.0)
 		}
 
-		// trustCumul ∈ [0,1]: 累计丢包率越高，越采纳历史判断
+		// trustCumul in [0,1]: the higher the cumulative loss, the more it is trusted
 		trustCumul := math.Min(1.0, cumulPenalty*5.0)
 
-		// EMA趋势修正: 当EMA < 累计时说明近期质量改善，按比例降低惩罚
+		// EMA correction: EMA < cumulative means the recent quality improved
 		improvementFactor := 1.0
 		if cumulPenalty > 0 && emaPenalty > 0 && emaPenalty < cumulPenalty {
 			improvementFactor = emaPenalty / cumulPenalty
 		}
 
-		// 累计可信 → max(当前,累计) * 趋势修正，确认性处罚
-		// 累计不可信 → 当前×0.3 疑似瞬态波动，减轻
+		// trusted cumulative: max(current, cumulative) * trend correction,
+		// untrusted cumulative: current * 0.3, a transient burst is discounted
 		lossFactor = trustCumul*math.Max(currentPenalty, cumulPenalty)*improvementFactor +
 			(1.0-trustCumul)*currentPenalty*0.3
 	}
@@ -256,11 +242,32 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 		lossFactor*params.lossWeight) * priorityFactor, false
 }
 
-// 识别连接的使用场景类型
+func GetTimeDecayWithCache(lastUsedTime int64, now int64, minDecay float64) float64 {
+	fuzzyLastUsedTime := (lastUsedTime / 3600) * 3600
+
+	hoursSinceLastConn := float64(now-fuzzyLastUsedTime) / 3600.0
+	var decay float64
+
+	switch {
+	case hoursSinceLastConn <= 24:
+		decay = 1.0
+	case hoursSinceLastConn <= 72:
+		decay = 1.0 - (hoursSinceLastConn-24.0)/48.0*0.2
+	case hoursSinceLastConn <= 168:
+		decay = 0.8 - (hoursSinceLastConn-72.0)/96.0*0.3
+	case hoursSinceLastConn <= 720:
+		decay = 0.5 - (hoursSinceLastConn-168.0)/552.0*0.2
+	default:
+		decay = 0.1
+	}
+
+	decay = math.Max(minDecay, decay)
+	return decay
+}
+
 func identifyConnectionScene(isUDP bool, latency int64, uploadMB, downloadMB, maxUploadRateKB, maxDownloadRateKB, durationMinutes float64) sceneKind {
 	totalRate := (uploadMB + downloadMB) / durationMinutes
 
-	// 游戏/互动场景特征：低延迟，持续连接，流量相对平衡
 	if (isUDP && latency < 150 && durationMinutes > 3 &&
 		uploadMB > 0.2 && downloadMB > 0.2 &&
 		maxUploadRateKB > 200 && maxDownloadRateKB > 200 &&
@@ -274,27 +281,23 @@ func identifyConnectionScene(isUDP bool, latency int64, uploadMB, downloadMB, ma
 		return sceneInteractive
 	}
 
-	// 大流量传输场景
 	if (uploadMB > 100 || downloadMB > 100 || maxUploadRateKB > 5000) && durationMinutes > 0.5 {
 		if totalRate > 5 {
 			return sceneTransfer
 		}
 	}
 
-	// 流媒体场景
 	if durationMinutes > 1 {
 		downloadThroughput := downloadMB / durationMinutes
-		if ((downloadMB > 60 && downloadMB/uploadMB > 3 && maxDownloadRateKB > 2000 && maxDownloadRateKB/maxUploadRateKB > 4 && downloadThroughput > 5) ||
-			(downloadMB > 15 && downloadMB/uploadMB > 3 && maxDownloadRateKB > 1000 && maxDownloadRateKB/maxUploadRateKB > 3 && downloadThroughput > 2)) {
+		if (downloadMB > 60 && downloadMB/uploadMB > 3 && maxDownloadRateKB > 2000 && maxDownloadRateKB/maxUploadRateKB > 4 && downloadThroughput > 5) ||
+			(downloadMB > 15 && downloadMB/uploadMB > 3 && maxDownloadRateKB > 1000 && maxDownloadRateKB/maxUploadRateKB > 3 && downloadThroughput > 2) {
 			return sceneStreaming
 		}
 	}
 
-	// 默认为Web场景
 	return sceneWeb
 }
 
-// 计算流量因子
 func calculateTrafficFactor(trafficMB, maxRateKB, durationMinutes, historyMaxRateKB, historyTotalMB, historyConnDuration float64, isShort bool) float64 {
 	if trafficMB <= 0 || durationMinutes <= 0 {
 		return 0.0
