@@ -17,7 +17,7 @@ import (
 )
 
 // The HTTP/2 flow governor below is ported from Medium1992/mihomo-proxy-ros
-// (core_patches/xhttp_flow, synced with Xray-core-fork v26.10.17-mux-ka-22),
+// (core_patches/xhttp_flow, synced with Xray-core-fork v26.10.17-mux-ka-24),
 // which carries the client role of the governor from Medium1992/Xray-core-fork.
 // Changes for Prizrak-Core: it builds with Go 1.20 (no min, max and clear
 // builtins, randv2 instead of math/rand/v2) and is switched on per proxy by
@@ -427,8 +427,10 @@ type flowWindow struct {
 	steady   int
 	piPrev   float64
 	piRTT    time.Duration
-	// noted is returned as of the connection's last flowEffect note.
-	noted int64
+	// noted is returned as of the connection's last flowEffect note, and
+	// tookAt when it last grew.
+	noted  int64
+	tookAt time.Time
 }
 
 // adjust sets the cap to twice what the reader consumed over the last round
@@ -563,11 +565,12 @@ const (
 // catches up with a path that got faster. A reader that takes less than a
 // quarter of what the window gives it per round limits itself: the cap does
 // not grow then, and shrinks by a quarter after flowShrinkAfter such rounds.
-// Cuts are scaled by gain, see flowEffect.
-func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain float64) {
+// Cuts are scaled by gain, see flowEffect, and pi returns the bytes it cut
+// against the queue.
+func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain float64) (cut float64) {
 	round := now.Sub(w.mark)
 	if round < flowMax(st.minRTT, flowModelMinRound) {
-		return
+		return 0
 	}
 	copied := w.returned - w.markBase
 	w.mark, w.markBase = now, w.returned
@@ -583,6 +586,7 @@ func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain floa
 	delta = flowMin(flowMax(delta, -flowPIMaxStep*cap), flowPIMaxStep*cap)
 	if delta < 0 {
 		delta *= gain
+		cut = -delta
 	}
 	if w.piRTT > 0 {
 		// Where cuts do not move the queue, the cap follows the round trip,
@@ -611,6 +615,9 @@ func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain floa
 		w.slow = 0
 	}
 	w.cap = int32(flowMin(flowMax(int64(cap+delta), int64(init)), int64(limit)))
+	// What reached the cap: a cap at init, or a round trip followed up, takes
+	// less off than the step, and bytes that never left the cap are no cut.
+	return flowMin(cut, flowMax(cap-float64(w.cap), 0))
 }
 
 // flowLearned remembers the largest cap a stream on this connection needed
@@ -765,20 +772,24 @@ func (c *flowConn) queueing(now time.Time) int {
 
 // cutGain is how much of a cut against the queue takes effect, see
 // flowEffect: the connection notes its round trip, the bytes its kernel has
-// in flight and the caps of the downloads that took data since the last
-// note, once per round trip of the empty path. A stream that carries no
-// data, as an upload's beside the download, would have its cap stand for
-// a cut that never moved.
+// in flight and the caps of the downloads that took data lately, once per
+// round trip of the empty path. A stream that carries no data, as an
+// upload's beside the download, would have its cap stand for a cut that
+// never moved. Lately, not since the last note: a download that slows
+// returns credit less often than once a round, and a round it missed would
+// take its cap out of the sum, a cut that never happened.
 func (c *flowConn) cutGain(now time.Time) float64 {
 	if !c.kOK || !c.effect.due(now, flowMax(c.kstat.minRTT, flowModelMinRound)) {
 		return c.effect.value()
 	}
 	var caps int64
 	for _, s := range c.streams {
-		if !s.serverDone && s.down.returned != s.down.noted {
+		if s.down.returned != s.down.noted {
+			s.down.noted, s.down.tookAt = s.down.returned, now
+		}
+		if !s.serverDone && now.Sub(s.down.tookAt) < flowMax(flowEffectRecent*c.kstat.minRTT, time.Second) {
 			caps += int64(s.down.cap)
 		}
-		s.down.noted = s.down.returned
 	}
 	set := flowMax(c.kstat.minRTT/4, 4*c.kstat.rttVar, flowPIMinSet)
 	return c.effect.note(now, c.kstat.rtt, c.kstat.minRTT, set, c.kstat.inFlight, caps)
@@ -1674,7 +1685,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			// half of its own window could be held below that half. Only
 			// where the kernel sees the path: behind a TCP proxy it sees
 			// no queue at all.
-			s.down.pi(now, c.kstat, c.down.init, c.down.max, c.cutGain(now))
+			c.effect.cutBy(s.down.pi(now, c.kstat, c.down.init, c.down.max, c.cutGain(now)))
 		default:
 			s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 			// A round trip pi saw before the stream left it is no step to
@@ -1691,7 +1702,9 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			}
 		case q == 2 && !c.noQueueCuts && now.Sub(s.down.qAt) >= c.currentRTT():
 			s.down.qAt = now
+			before := s.down.cap
 			s.down.cap = flowMax(c.down.init, s.down.cap-int32(c.cutGain(now)*float64(s.down.cap/4)))
+			c.effect.cutBy(float64(before - s.down.cap))
 		}
 		c.downLearned.note(now, c.down.init, s.down.cap)
 		rel := c.downRelease(s)
