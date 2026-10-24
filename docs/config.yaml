@@ -1778,6 +1778,41 @@ proxies: # socks5
     type: direct
     interface-name: en1
     routing-mark: 6667
+
+  # freedom: DIRECT 加上 Xray-core freedom 出站的 fragment 与 sockopt
+  # freedom: DIRECT plus the fragment and sockopt settings of the Xray-core freedom outbound
+  - name: FRAGMENT
+    type: freedom
+    # interface-name / routing-mark / ip-version / tfo / mptcp 同 direct
+    fragment:
+      # tlshello: 把第一个 TLS ClientHello 拆成多个 TLS 记录
+      #           split the first TLS ClientHello into several TLS records
+      # "1-3":    把第 1 到第 3 次写入拆成 TCP 分段 / split writes 1 to 3 into TCP segments
+      # "":       拆分所有写入 / split every write
+      packets: tlshello
+      length: "1-1"        # 每段长度（字节），区间 [min, max)，同 Xray / piece length in bytes, [min, max) as in Xray
+      interval: "0"        # 段间间隔（毫秒）；tlshello 下 0 表示所有记录一次写出 / pause in ms; 0 with tlshello sends all records in one write
+      # max-split: "0"     # 最多拆成几段，0 不限 / at most this many pieces, 0 for no limit
+      # split: length      # length: 按 length 切分（默认）；sni: 在 SNI 的每个域名标签内随机切一刀（同 sing-box）
+      #                    # length: cut into pieces of length (default); sni: cut inside every label of the server name (as sing-box)
+      # wait: interval     # interval: 段间按 interval 暂停（默认）；ack: 等对端确认后再发下一段（同 sing-box）
+      #                    # interval: pause for interval (default); ack: wait for the peer's ACK before the next piece (as sing-box)
+      # fallback-delay: 500 # wait: ack 无法获知确认时的等待（毫秒）/ delay in ms where wait: ack can't see the ACK
+    sockopt:
+      # 不支持的选项会跳过并在日志中警告 / an unsupported option is skipped with a warning in the log
+      tcp-congestion: bbr          # 仅 Linux/Android / Linux and Android only
+      tcp-user-timeout: 10000      # 毫秒，仅 Linux/Android / milliseconds, Linux and Android only
+      tcp-keep-alive-idle: 300     # 秒，负数关闭 keep-alive / seconds, negative disables keep-alive
+      tcp-keep-alive-interval: 60  # 秒 / seconds
+      custom-sockopt:
+        # level 默认 6 (IPPROTO_TCP)；type: int 或 str；system: linux / windows / darwin，留空表示所有系统
+        # level defaults to 6 (IPPROTO_TCP); type: int or str; system: linux / windows / darwin, empty for every system
+        - opt: "1"                 # TCP_NODELAY
+          type: int
+          value: "1"
+          # level: "6"
+          # system: linux
+          # network: tcp
 proxy-groups:
   # url-test 将按照 url 测试结果使用延迟最低节点
   - name: "auto"

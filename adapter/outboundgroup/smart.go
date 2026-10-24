@@ -445,7 +445,7 @@ func (s *Smart) groupDialFailed(proxies []C.Proxy, err error) {
 	}
 	for _, p := range proxies {
 		t := p.Type()
-		if t == C.Direct || t == C.Compatible || t == C.Reject || t == C.Pass || t == C.RejectDrop {
+		if t == C.Direct || t == C.Freedom || t == C.Compatible || t == C.Reject || t == C.Pass || t == C.RejectDrop {
 			continue
 		}
 		s.onDialFailed(t, err, s.healthCheck)

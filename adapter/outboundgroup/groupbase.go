@@ -263,7 +263,7 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 }
 
 func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func()) {
-	if adapterType == C.Direct || adapterType == C.Compatible || adapterType == C.Reject || adapterType == C.Pass || adapterType == C.RejectDrop {
+	if adapterType == C.Direct || adapterType == C.Freedom || adapterType == C.Compatible || adapterType == C.Reject || adapterType == C.Pass || adapterType == C.RejectDrop {
 		return
 	}
 
