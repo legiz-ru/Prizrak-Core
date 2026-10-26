@@ -7,6 +7,7 @@ import (
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/sing_vless"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/transport/finalmask/option"
 )
 
 type VlessOption struct {
@@ -27,6 +28,7 @@ type VlessOption struct {
 	JLSConfig       JLSConfig     `inbound:"jls-config,omitempty"`
 	RealityConfig   RealityConfig `inbound:"reality-config,omitempty"`
 	MuxOption       MuxOption     `inbound:"mux-option,omitempty"`
+	FinalMask       option.Option `inbound:"finalmask,omitempty"`
 }
 
 type VlessUser struct {
@@ -131,6 +133,7 @@ func NewVless(options *VlessOption) (*Vless, error) {
 			JLSConfig:       options.JLSConfig.Build(),
 			RealityConfig:   options.RealityConfig.Build(),
 			MuxOption:       options.MuxOption.Build(),
+			FinalMask:       options.FinalMask,
 		},
 	}, nil
 }

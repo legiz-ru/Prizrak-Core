@@ -1121,6 +1121,125 @@ proxies: # socks5
       #   servername: xxx.com
       #   client-fingerprint: chrome
 
+  # finalmask: 移植自 Xray-core (Jolymmiles 分支) 的 finalmask，仅 vless 与 trojan 支持
+  # finalmask: the finalmask layer of Xray-core (the Jolymmiles fork), for vless and trojan only
+  # tcp 掩码包在 TLS/REALITY 之下、TCP 套接字之上，所有 network 都生效 (tcp/ws/grpc/h2/http/xhttp)
+  # TCP masks wrap the socket under TLS/REALITY, with every network (tcp/ws/grpc/h2/http/xhttp)
+  # udp 掩码只用于 xhttp over HTTP/3 (network: xhttp, alpn: [h3]) 的 QUIC 套接字
+  # UDP masks wrap the QUIC socket of xhttp over HTTP/3 only (network: xhttp, alpn: [h3])
+  # 列表顺序同 Xray：第一项最靠近 TLS，最后一项最靠近网络（上线的就是它）
+  # The order is Xray's: the first entry is nearest to TLS, the last one is what the network sees
+  # 每一项写 type 加该掩码的设置；也接受 Xray 的 settings 嵌套写法
+  # Every entry has a type and the mask's own settings; Xray's nested settings: {...} is accepted too
+  # 区间写法 "a-b" 同 Xray；不移植 mkcp-legacy、salamander (gecko)、realm
+  # Ranges are written "a-b" as in Xray; mkcp-legacy, salamander (gecko) and realm are not ported
+  - name: "vless-finalmask"
+    type: vless
+    server: server
+    port: 443
+    uuid: uuid
+    tls: true
+    network: xhttp
+    alpn: [h3]
+    servername: xxx.com
+    xhttp-opts:
+      path: "/"
+    finalmask:
+      tcp:
+        # fragment: 把最初的写入切成小段 / fragment: cut the first writes into pieces
+        - type: fragment
+          packets: tlshello     # tlshello: 拆第一个 ClientHello 为多个 TLS 记录；"1-3": 拆第 1-3 次写入为 TCP 分段；"": 拆所有写入
+                                # tlshello: split the first ClientHello into TLS records; "1-3": writes 1 to 3 into TCP segments; "": every write
+          length: "100-200"     # 每段长度 [min, max) / piece length, [min, max)
+          delay: "10-20"        # 段间延迟（毫秒）；tlshello 下 0 表示一次写出 / pause in ms; 0 with tlshello sends all records in one write
+          # lengths: ["1-1", "100-200"]  # 第 i 段各自的长度，末项用于其后所有段 / per-piece lengths, the last entry serves every later piece
+          # delays: ["0", "10-20"]       # 第 i 段之后各自的延迟 / per-piece delays
+          # max-split: "0"               # 最多拆成几段，0 不限 / at most this many pieces, 0 for no limit
+        # header-custom: 连接开头的自定义握手，客户端与服务端轮流发送 / a scripted exchange at the start of the stream
+        - type: header-custom
+          clients:              # clients[i] 由客户端发送，servers[i] 由服务端回应 / the client sends clients[i], the server answers with servers[i]
+            - - packet: "GET /api HTTP/1.1\r\nHost: cdn.example.com\r\nX-Nonce: "
+                type: str       # packet 的格式：str / hex / base64，或直接写字节数组 / packet format: str, hex, base64, or a list of byte values
+              - rand: 8         # 8 个随机字节 / 8 random bytes
+                rand-range: "97-122"  # 随机字节取值范围（默认 0-255）/ byte values of rand, 0-255 by default
+                capture: nonce  # 保存为变量 / keep them under a name
+              - packet: "\r\n\r\n"
+                type: str
+          servers:
+            - - packet: "HTTP/1.1 101 Switching Protocols\r\nX-Nonce: "
+                type: str
+              - reuse: nonce    # 期待客户端发过的同一值 / expect the captured value
+              - packet: "\r\n\r\n"
+                type: str
+              # - transform: {op: be16, args: [{metadata: dst_port_u16}]}  # 计算得到的字节；op: concat slice be16 be32 le16 le32 le64 xor16 xor32 pad truncate add sub and or shl shr
+              #                                                           # computed bytes; args: {bytes, type} / {u64} / {reuse} / {metadata} / {transform}
+              # - delay: "10-20"  # 发送该项前的延迟（毫秒，仅 TCP）/ pause in ms before the item (TCP only)
+          # errors: [[...]]     # 服务端在 clients[i] 不匹配时的回应（仅服务端）/ what the server answers to a mismatch (server side only)
+        # sudoku: 把整条流变成数独提示字节 / sudoku: the whole stream as sudoku hint bytes
+        - type: sudoku
+          password: password
+          # ascii: prefer_entropy   # prefer_entropy（默认）或 prefer_ascii / prefer_entropy (default) or prefer_ascii
+          # custom-table: xpxvvpvv  # 8 个字母的位布局：2 个 x、2 个 p、4 个 v（仅 entropy）/ an 8-letter bit layout: 2 x, 2 p, 4 v (entropy only)
+          # custom-tables: [xpxvvpvv, vxpvxvvp]  # 轮换多个布局 / rotate several layouts
+          # padding-min: 0          # 填充字节的概率（百分比）/ chance of a padding byte, in percent
+          # padding-max: 0
+        # xmc: 流伪装成 Minecraft 客户端登录并游玩 / xmc: the stream looks like a Minecraft login and game
+        # - type: xmc
+        #   password: password     # 两端相同，派生 RSA 密钥 / the same on both sides, derives the RSA key
+        #   hostname: mc.example.com
+        #   profiles:              # 两端须配置相同的已签名档案 / both sides need the same signed profile
+        #     - username: Steve
+        #       uuid: 069a79f4-44e9-4726-a5be-fca90e38aaf5   # https://api.mojang.com/users/profiles/minecraft/{username}
+        #       textures-value: ...                           # https://sessionserver.mojang.com/session/minecraft/profile/{uuid}?unsigned=false
+        #       textures-signature: ...
+      udp:
+        # noise: 向每个对端首次发包前（以及 reset 秒后再次）先发几个噪声包 / noise datagrams before the first packet to a peer, again after reset seconds
+        - type: noise
+          reset: "30-60"        # 秒，0 表示每个对端只发一次 / seconds, 0 sends the noise once per peer
+          noise:
+            - type: exp         # 组合包：<b hex> 固定字节 <t> 4 字节时间戳 <c> 4 字节计数 <n> 8 字节随机数 <r a-b> 随机字节 <rc a-b> 随机字母 <rd a-b> 随机数字
+              packet: "<b 0d0a0d0a> <t> <r 24>"  # composed: <b hex> bytes, <t> timestamp, <c> counter, <n> nonce, <r a-b> random bytes, <rc> letters, <rd> digits
+              delay: "10-20"    # 该包之后的延迟（毫秒）/ pause in ms after the packet
+            - rand: "40-60"     # 随机字节数 / this many random bytes
+              rand-range: "0-255"
+            # - packet: "..."   # 固定内容，type: str / hex / base64 / fixed bytes
+            #   type: hex
+        # header-custom (udp): 每个数据报前加头 (mode: prefix，默认) 或先独立交换一次 (mode: standalone)
+        # header-custom (udp): a header in front of every datagram (mode: prefix, default) or exchanged once as datagrams of their own (standalone)
+        - type: header-custom
+          mode: prefix
+          client:
+            - packet: "c0"
+              type: hex
+            - rand: 3
+          server:
+            - packet: "c1"
+              type: hex
+            - rand: 1
+        # - type: sudoku        # 同 tcp，按数据报编码 / as on tcp, per datagram
+        #   password: password
+        # udphop: 定期更换本地套接字和/或远端地址端口；必须是 udp 列表最后一项 / change the local socket and/or the remote at intervals; last entry of udp
+        # - type: udphop
+        #   mode: intervalLocal  # intervalLocal / intervalRemote / perConnRemote，逗号分隔可组合 / comma-separated set
+        #   interval: "30-60"    # 秒，至少 5 / seconds, at least 5
+        #   remote-ips: ["203.0.113.0/24"]   # intervalRemote / perConnRemote 的远端地址池 / remote pool for the remote modes
+        #   remote-ports: ["20000-30000"]
+        # xdns: 数据报以 DNS 查询/应答承载，经解析器到达服务端；必须是 udp 列表最后一项
+        # xdns: datagrams travel as DNS queries and answers through the resolvers; last entry of udp
+        # - type: xdns
+        #   domains:
+        #     - names: ["t.example.com"]  # 服务端为其权威的区域 / the zones the server is authoritative for
+        #       edns0: 4096                # 建议设置，否则应答装不下 QUIC 包 / set it, a 512-byte answer does not hold a QUIC packet
+        #       types: [16]                # 1 A, 5 CNAME, 16 TXT (默认), 28 AAAA；A 每个应答最多 764 字节 / A answers hold 764 bytes at most
+        #       # len-limit: 255
+        #       # label-limit: 63
+        #   resolvers:
+        #     - addrs: ["udp://1.1.1.1", "tcp://8.8.8.8:53"]  # 不写协议为 udp，不写端口为 53 / udp and port 53 by default
+        #   # extra-poll: 0        # 每次发送后额外轮询次数 0-3 / extra polls after every write, 0 to 3
+        # xicmp: 数据报以 ICMP echo 承载；需要 raw 套接字或 dgram 模式的非特权 ICMP 套接字 / datagrams as ICMP echoes; raw sockets, or dgram with unprivileged ICMP sockets
+        # - type: xicmp
+        #   dgram: true
+        #   ips: ["203.0.113.1"]  # 服务端地址；server 为域名时必填 / the server's addresses, required when server is a domain
 
   # Trojan
   - name: "trojan"
@@ -2500,6 +2619,21 @@ listeners:
     #   sc-max-buffered-posts: 30
     #   sc-stream-up-server-secs: "20-80"
     #   sc-max-each-post-bytes: 1000000
+    # finalmask: 服务端的 finalmask (同 Xray-core)，与客户端 proxies 中的 finalmask 配置相同的掩码链，见上文 vless-finalmask
+    # finalmask: the server side of Xray-core's finalmask; the same TCP chain as the client's, see vless-finalmask above
+    # 包在 TLS/REALITY 之下，所有传输层 (tcp/ws/grpc/xhttp) 生效；监听端没有 HTTP/3，所以只支持 tcp 掩码，trojan 监听同样支持
+    # applied under TLS/REALITY with every transport (tcp/ws/grpc/xhttp); listeners have no HTTP/3, so only tcp masks; trojan listeners take it too
+    # finalmask:
+    #   tcp:
+    #     - type: header-custom
+    #       clients: [[{packet: "GET / HTTP/1.1\r\n", type: str}, {rand: 4, capture: n}]]
+    #       servers: [[{packet: "HTTP/1.1 101\r\n", type: str}, {reuse: n}]]
+    #       errors: [[{packet: "HTTP/1.1 404 Not Found\r\n\r\n", type: str}]]  # 客户端序列不匹配时的回应 / the answer to a mismatch
+    #     - type: sudoku
+    #       password: password
+    #     - type: fragment
+    #       packets: "1-2"
+    #       length: "10-20"
     # -------------------------
     # vless encryption服务端配置：
     # （原生外观 / 只 XOR 公钥 / 全随机数。1-RTT 每次下发随机 300 到 600 秒的 ticket 以便 0-RTT 复用 / 只允许 1-RTT）

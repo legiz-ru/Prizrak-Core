@@ -13,6 +13,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/finalmask"
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/jls"
 	"github.com/metacubex/mihomo/transport/restls"
@@ -32,6 +33,9 @@ type Trojan struct {
 
 	// for gun mux
 	gunClient *gun.Client
+
+	finalMask       *finalmask.FinalMask
+	finalMaskDialer *finalmask.Dialer
 
 	echConfig       *ech.Config
 	shadowTLSConfig *shadowtls.Config
@@ -65,6 +69,7 @@ type TrojanOption struct {
 	GrpcOpts          GrpcOptions      `proxy:"grpc-opts,omitempty"`
 	WSOpts            WSOptions        `proxy:"ws-opts,omitempty"`
 	SSOpts            TrojanSSOption   `proxy:"ss-opts,omitempty"`
+	FinalMask         *FinalMaskOption `proxy:"finalmask,omitempty"`
 	ClientFingerprint string           `proxy:"client-fingerprint,omitempty"`
 }
 
@@ -213,7 +218,12 @@ func (t *Trojan) dialContext(ctx context.Context) (c net.Conn, err error) {
 		return t.gunClient.Dial()
 	default:
 	}
-	return t.dialer.DialContext(ctx, "tcp", t.addr)
+	return t.dialTCP(ctx, t.addr)
+}
+
+// dialTCP dials addr and applies the finalmask TCP chain, under TLS.
+func (t *Trojan) dialTCP(ctx context.Context, addr string) (net.Conn, error) {
+	return finalMaskDialTCP(ctx, t.finalMask, t.dialer, t.finalMaskDialer, addr)
 }
 
 // DialContext implements C.ProxyAdapter
@@ -306,6 +316,14 @@ func NewTrojan(option TrojanOption) (*Trojan, error) {
 	t.dialer = option.NewDialer(t.DialOptions())
 
 	var err error
+	t.finalMask, err = option.FinalMask.Parse()
+	if err != nil {
+		return nil, err
+	}
+	if err = checkFinalMaskNetwork(t.finalMask, "trojan", option.Network, option.ALPN); err != nil {
+		return nil, err
+	}
+	t.finalMaskDialer = newFinalMaskDialer(t.dialer)
 	t.echConfig, err = option.ECHOpts.Parse()
 	if err != nil {
 		return nil, err
@@ -359,7 +377,7 @@ func NewTrojan(option TrojanOption) (*Trojan, error) {
 
 	if option.Network == "grpc" {
 		dialFn := func(ctx context.Context, network, addr string) (net.Conn, error) {
-			c, err := t.dialer.DialContext(ctx, "tcp", t.addr)
+			c, err := t.dialTCP(ctx, t.addr)
 			if err != nil {
 				return nil, fmt.Errorf("%s connect error: %s", t.addr, err.Error())
 			}

@@ -102,7 +102,7 @@ func (c *Conn) writeNext(b []byte) (int, error) {
 	from := 0
 	for i, to := range append(cuts, len(b)) {
 		if i > 0 {
-			c.pause()
+			c.pause(i - 1)
 		}
 		n, err := c.Conn.Write(b[from:to])
 		from += n
@@ -149,7 +149,7 @@ func (c *Conn) writeHello(b []byte) error {
 			continue
 		}
 		if i > 0 {
-			c.pause()
+			c.pause(i - 1)
 		}
 		if _, err := c.Conn.Write(record); err != nil {
 			return err
@@ -160,7 +160,7 @@ func (c *Conn) writeHello(b []byte) error {
 	}
 	if len(out) > 0 {
 		if separate {
-			c.pause()
+			c.pause(len(cuts) - 1)
 		}
 		_, err := c.Conn.Write(out)
 		return err
@@ -176,7 +176,8 @@ func (c *Conn) lengthCuts(n int) []int {
 	var cuts []int
 	var pieces uint64
 	for from := 0; ; {
-		to := from + int(randBetween(cfg.LengthMin, cfg.LengthMax))
+		lengthMin, lengthMax := cfg.lengthRange(int(pieces))
+		to := from + int(randBetween(lengthMin, lengthMax))
 		pieces++
 		if to >= n || (maxSplit > 0 && pieces >= maxSplit) {
 			return cuts
@@ -186,14 +187,17 @@ func (c *Conn) lengthCuts(n int) []int {
 	}
 }
 
-// pause waits between two pieces: for the ACK of the previous one, or for a
-// random interval.
-func (c *Conn) pause() {
+// pause waits after piece i: for its ACK, or for a random interval.
+func (c *Conn) pause(i int) {
 	if c.cfg.WaitAck {
 		waitAck(c.ctx, c.tcp, c.cfg.FallbackDelay)
 		return
 	}
-	if d := randBetween(c.cfg.IntervalMin, c.cfg.IntervalMax); d > 0 {
+	delayMin, delayMax := c.cfg.delayRange(i)
+	if delayMax == 0 {
+		return
+	}
+	if d := randBetween(delayMin, delayMax); d > 0 {
 		sleep(c.ctx, time.Duration(d)*time.Millisecond)
 	}
 }

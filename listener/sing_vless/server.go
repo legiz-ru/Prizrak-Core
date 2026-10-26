@@ -18,6 +18,7 @@ import (
 	"github.com/metacubex/mihomo/listener/shadowtls"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/ntp"
+	"github.com/metacubex/mihomo/transport/finalmask"
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/vless/encryption"
 	mihomoVMess "github.com/metacubex/mihomo/transport/vmess"
@@ -69,6 +70,14 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		}))
 
 	sl = &Listener{config: config, service: service, handler: h}
+
+	fm, err := config.FinalMask.Parse()
+	if err != nil {
+		return nil, err
+	}
+	if fm.HasUDP() {
+		return nil, errors.New("finalmask.udp needs an HTTP/3 listener, which this inbound has not; use finalmask.tcp")
+	}
 
 	sl.decryption, err = encryption.NewServer(config.Decryption)
 	if err != nil {
@@ -263,6 +272,8 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		if err != nil {
 			return nil, err
 		}
+		// The masks sit under TLS, REALITY and the others, as in Xray.
+		l = finalmask.NewListener(l, fm)
 		if shadowTLSBuilder != nil {
 			l = shadowTLSBuilder.NewListener(l)
 		} else if restlsBuilder != nil {

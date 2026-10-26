@@ -17,6 +17,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/finalmask"
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/jls"
 	"github.com/metacubex/mihomo/transport/restls"
@@ -47,6 +48,9 @@ type Vless struct {
 	gunClient *gun.Client
 	// for xhttp
 	xhttpClient *xhttp.Client
+
+	finalMask       *finalmask.FinalMask
+	finalMaskDialer *finalmask.Dialer
 
 	echConfig       *ech.Config
 	shadowTLSConfig *shadowtls.Config
@@ -80,6 +84,7 @@ type VlessOption struct {
 	GrpcOpts          GrpcOptions       `proxy:"grpc-opts,omitempty"`
 	WSOpts            WSOptions         `proxy:"ws-opts,omitempty"`
 	XHTTPOpts         XHTTPOptions      `proxy:"xhttp-opts,omitempty"`
+	FinalMask         *FinalMaskOption  `proxy:"finalmask,omitempty"`
 	WSHeaders         map[string]string `proxy:"ws-headers,omitempty"`
 	SkipCertVerify    bool              `proxy:"skip-cert-verify,omitempty"`
 	NameCertVerify    string            `proxy:"name-cert-verify,omitempty"`
@@ -362,7 +367,26 @@ func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 		return v.xhttpClient.Dial(ctx)
 	default:
 	}
-	return v.dialer.DialContext(ctx, "tcp", v.addr)
+	return v.dialTCP(ctx, v.addr)
+}
+
+// dialTCP dials addr and applies the finalmask TCP chain, under TLS.
+func (v *Vless) dialTCP(ctx context.Context, addr string) (net.Conn, error) {
+	return finalMaskDialTCP(ctx, v.finalMask, v.dialer, v.finalMaskDialer, addr)
+}
+
+// dialQUIC opens the QUIC connection of xhttp over HTTP/3, through the
+// finalmask UDP chain when there is one.
+func (v *Vless) dialQUIC(ctx context.Context, addr string, tlsConfig *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+	option := common.DialQuicOption{Early: true}
+	if v.finalMask.HasUDP() {
+		return finalMaskDialQUIC(ctx, v.finalMask, v.finalMaskDialer, addr, tlsConfig, cfg, option)
+	}
+	_, quicConn, err := common.DialQuic(ctx, addr, v.DialOptions(), v.dialer, tlsConfig, cfg, option)
+	if err != nil {
+		return nil, err
+	}
+	return quicConn, nil
 }
 
 // DialContext implements C.ProxyAdapter
@@ -528,6 +552,15 @@ func NewVless(option VlessOption) (*Vless, error) {
 	}
 	v.dialer = option.NewDialer(v.DialOptions())
 
+	v.finalMask, err = option.FinalMask.Parse()
+	if err != nil {
+		return nil, err
+	}
+	if err = checkFinalMaskNetwork(v.finalMask, "vless", option.Network, option.ALPN); err != nil {
+		return nil, err
+	}
+	v.finalMaskDialer = newFinalMaskDialer(v.dialer)
+
 	v.encryption, err = encryption.NewClient(option.Encryption)
 	if err != nil {
 		return nil, err
@@ -584,7 +617,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 		}
 	case "grpc":
 		dialFn := func(ctx context.Context, network, addr string) (net.Conn, error) {
-			c, err := v.dialer.DialContext(ctx, "tcp", v.addr)
+			c, err := v.dialTCP(ctx, v.addr)
 			if err != nil {
 				return nil, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
 			}
@@ -688,7 +721,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 		makeTransport := func() http.RoundTripper {
 			return xhttp.NewTransport(
 				func(ctx context.Context) (net.Conn, error) {
-					return v.dialer.DialContext(ctx, "tcp", v.addr)
+					return v.dialTCP(ctx, v.addr)
 				},
 				func(ctx context.Context, raw net.Conn, isH2 bool) (net.Conn, error) {
 					return v.streamTLSConn(ctx, raw, isH2)
@@ -725,11 +758,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 					if err != nil {
 						return nil, err
 					}
-					_, quicConn, err := common.DialQuic(ctx, v.addr, v.DialOptions(), v.dialer, tlsConfig, cfg, common.DialQuicOption{Early: true})
-					if err != nil {
-						return nil, err
-					}
-					return quicConn, nil
+					return v.dialQUIC(ctx, v.addr, tlsConfig, cfg)
 				},
 				v.option.ALPN,
 				hKeepAlivePeriod,
@@ -850,7 +879,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 			makeDownloadTransport = func() http.RoundTripper {
 				return xhttp.NewTransport(
 					func(ctx context.Context) (net.Conn, error) {
-						return v.dialer.DialContext(ctx, "tcp", downloadAddr)
+						return v.dialTCP(ctx, downloadAddr)
 					},
 					func(ctx context.Context, conn net.Conn, isH2 bool) (net.Conn, error) {
 						if downloadTLS {
@@ -917,11 +946,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 						if err != nil {
 							return nil, err
 						}
-						_, quicConn, err := common.DialQuic(ctx, downloadAddr, v.DialOptions(), v.dialer, tlsConfig, cfg, common.DialQuicOption{Early: true})
-						if err != nil {
-							return nil, err
-						}
-						return quicConn, nil
+						return v.dialQUIC(ctx, downloadAddr, tlsConfig, cfg)
 					},
 					downloadALPN,
 					downloadHKeepAlivePeriod,

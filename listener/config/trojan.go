@@ -5,6 +5,7 @@ import (
 
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/sing"
+	"github.com/metacubex/mihomo/transport/finalmask/option"
 )
 
 type TrojanUser struct {
@@ -30,6 +31,7 @@ type TrojanServer struct {
 	RealityConfig   reality.Config `yaml:"reality-config" json:"reality-config,omitempty"`
 	MuxOption       sing.MuxOption
 	TrojanSSOption  TrojanSSOption
+	FinalMask       option.Option `yaml:"finalmask" json:"finalmask,omitempty"`
 }
 
 // TrojanSSOption from https://github.com/p4gefau1t/trojan-go/blob/v0.10.6/tunnel/shadowsocks/config.go#L5

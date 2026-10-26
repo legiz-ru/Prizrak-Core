@@ -27,6 +27,13 @@ type Config struct {
 	MaxSplitMin            uint64
 	MaxSplitMax            uint64
 
+	// Lengths and Delays, when set, give piece i its own [min, max) range
+	// (the last entry serves every later piece) in place of LengthMin/Max and
+	// IntervalMin/Max, as the finalmask fragment of Xray-core. Delays are in
+	// milliseconds.
+	Lengths [][2]uint64
+	Delays  [][2]uint64
+
 	// SplitSNI cuts inside the labels of the server name instead of into
 	// pieces of LengthMin..LengthMax bytes; writes without a server name pass
 	// unchanged.
@@ -50,7 +57,39 @@ type Option struct {
 func (c *Config) TLSHello() bool { return c.PacketsFrom == 0 && c.PacketsTo == 1 }
 
 // separate reports whether the pieces go out one by one instead of in one write.
-func (c *Config) separate() bool { return c.WaitAck || c.IntervalMax > 0 }
+func (c *Config) separate() bool {
+	if c.WaitAck || c.IntervalMax > 0 {
+		return true
+	}
+	for _, d := range c.Delays {
+		if d[1] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// lengthRange is the [min, max) length of piece i.
+func (c *Config) lengthRange(i int) (uint64, uint64) {
+	if n := len(c.Lengths); n > 0 {
+		if i >= n {
+			i = n - 1
+		}
+		return c.Lengths[i][0], c.Lengths[i][1]
+	}
+	return c.LengthMin, c.LengthMax
+}
+
+// delayRange is the [min, max) pause in milliseconds after piece i.
+func (c *Config) delayRange(i int) (uint64, uint64) {
+	if n := len(c.Delays); n > 0 {
+		if i >= n {
+			i = n - 1
+		}
+		return c.Delays[i][0], c.Delays[i][1]
+	}
+	return c.IntervalMin, c.IntervalMax
+}
 
 func NewConfig(o Option) (*Config, error) {
 	c := &Config{FallbackDelay: DefaultFallbackDelay}

@@ -1,0 +1,109 @@
+package sudoku
+
+import (
+	"net"
+	"sync"
+	"time"
+
+	"github.com/metacubex/mihomo/log"
+)
+
+type udpConn struct {
+	conn   net.PacketConn
+	tables []*table
+	pMin   int
+	pMax   int
+
+	readBuf []byte
+
+	readMu  sync.Mutex
+	writeMu sync.Mutex
+}
+
+// NewUDPConn encodes every datagram with the classic codec, restarting at the
+// first table for each one.
+func NewUDPConn(raw net.PacketConn, config *Config) (net.PacketConn, error) {
+	tables, err := getTables(config)
+	if err != nil {
+		return nil, err
+	}
+
+	pMin, pMax := normalizedPadding(config)
+	return &udpConn{
+		conn:    raw,
+		tables:  tables,
+		pMin:    pMin,
+		pMax:    pMax,
+		readBuf: make([]byte, 65535),
+	}, nil
+}
+
+func (c *udpConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
+	for {
+		n, addr, err = c.conn.ReadFrom(c.readBuf)
+		if err != nil {
+			return n, addr, err
+		}
+
+		decoded := make([]byte, 0, n/4+1)
+		hints := make([]byte, 0, 4)
+		tableIndex := 0
+		hints, decoded, err = decodeBytes(c.tables, &tableIndex, c.readBuf[:n], hints, decoded)
+		if err != nil {
+			log.Debugln("[finalmask] sudoku: drop packet from %s with size %d: %v", addr, n, err)
+			continue
+		}
+		if len(hints) != 0 {
+			log.Debugln("[finalmask] sudoku: drop packet from %s with size %d: trailing hints", addr, n)
+			continue
+		}
+		if len(p) < len(decoded) {
+			log.Debugln("[finalmask] sudoku: drop packet from %s with size %d: buffer too small", addr, n)
+			continue
+		}
+		copy(p, decoded)
+		return len(decoded), addr, nil
+	}
+}
+
+func (c *udpConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	// UDP decoding restarts at table 0 for every datagram, so encoding must do the same.
+	encoded, err := newCodec(c.tables, c.pMin, c.pMax).encode(p)
+	if err != nil {
+		log.Debugln("[finalmask] sudoku: drop packet to %s with size %d: %v", addr, len(p), err)
+		return 0, nil
+	}
+
+	_, err = c.conn.WriteTo(encoded, addr)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(p), nil
+}
+
+func (c *udpConn) Close() error {
+	return c.conn.Close()
+}
+
+func (c *udpConn) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+func (c *udpConn) SetDeadline(t time.Time) error {
+	return c.conn.SetDeadline(t)
+}
+
+func (c *udpConn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+func (c *udpConn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
+}

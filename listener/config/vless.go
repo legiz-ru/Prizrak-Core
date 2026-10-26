@@ -5,6 +5,7 @@ import (
 
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/sing"
+	"github.com/metacubex/mihomo/transport/finalmask/option"
 )
 
 type VlessUser struct {
@@ -32,6 +33,7 @@ type VlessServer struct {
 	JLSConfig       JLSConfig      `yaml:"jls-config" json:"jls-config,omitempty"`
 	RealityConfig   reality.Config `yaml:"reality-config" json:"reality-config,omitempty"`
 	MuxOption       sing.MuxOption `yaml:"mux-option" json:"mux-option,omitempty"`
+	FinalMask       option.Option  `yaml:"finalmask" json:"finalmask,omitempty"`
 }
 
 type XHTTPConfig struct {

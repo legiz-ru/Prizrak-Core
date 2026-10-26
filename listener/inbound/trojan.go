@@ -7,6 +7,7 @@ import (
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/trojan"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/transport/finalmask/option"
 )
 
 type TrojanOption struct {
@@ -26,6 +27,7 @@ type TrojanOption struct {
 	RealityConfig   RealityConfig  `inbound:"reality-config,omitempty"`
 	MuxOption       MuxOption      `inbound:"mux-option,omitempty"`
 	SSOption        TrojanSSOption `inbound:"ss-option,omitempty"`
+	FinalMask       option.Option  `inbound:"finalmask,omitempty"`
 }
 
 type TrojanUser struct {
@@ -88,6 +90,7 @@ func NewTrojan(options *TrojanOption) (*Trojan, error) {
 				Method:   options.SSOption.Method,
 				Password: options.SSOption.Password,
 			},
+			FinalMask: options.FinalMask,
 		},
 	}, nil
 }

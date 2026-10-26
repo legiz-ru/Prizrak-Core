@@ -21,6 +21,7 @@ import (
 	"github.com/metacubex/mihomo/listener/shadowtls"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/ntp"
+	"github.com/metacubex/mihomo/transport/finalmask"
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/shadowsocks/core"
 	"github.com/metacubex/mihomo/transport/socks5"
@@ -77,6 +78,14 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 		}
 	}
 	sl = &Listener{false, config, nil, keys, pickCipher, h}
+
+	fm, err := config.FinalMask.Parse()
+	if err != nil {
+		return nil, err
+	}
+	if fm.HasUDP() {
+		return nil, errors.New("finalmask.udp needs an HTTP/3 listener, which this inbound has not; use finalmask.tcp")
+	}
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
@@ -202,6 +211,8 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 		if err != nil {
 			return nil, err
 		}
+		// The masks sit under TLS, REALITY and the others, as in Xray.
+		l = finalmask.NewListener(l, fm)
 		if shadowTLSBuilder != nil {
 			l = shadowTLSBuilder.NewListener(l)
 		} else if restlsBuilder != nil {
