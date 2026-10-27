@@ -128,3 +128,47 @@ func TestRegistryTypes(t *testing.T) {
 		}
 	}
 }
+
+// Xray writes the mask settings in camelCase; they decode like the
+// kebab-case of the YAML, nested maps and lists included.
+func TestXrayCamelCaseKeys(t *testing.T) {
+	require.Equal(t, "rand-range", kebabKey("randRange"))
+	require.Equal(t, "remote-ips", kebabKey("remoteIPs"))
+	require.Equal(t, "textures-value", kebabKey("texturesValue"))
+	require.Equal(t, "edns0", kebabKey("edns0"))
+	require.Equal(t, "padding-min", kebabKey("padding-min"))
+	require.Equal(t, "custom_tables", kebabKey("custom_tables"))
+	require.Equal(t, "u64", kebabKey("u64"))
+
+	fm, err := (&Option{
+		TCP: []map[string]any{
+			{"type": "fragment", "settings": map[string]any{"packets": "tlshello", "length": "10-20", "delay": float64(0), "maxSplit": "3-5"}},
+			{"type": "header-custom", "settings": map[string]any{
+				"clients": []any{[]any{map[string]any{"type": "str", "packet": "GET / HTTP/1.1\r\nX: "}, map[string]any{"rand": float64(8), "randRange": "97-122", "capture": "n"}}},
+				"servers": []any{[]any{map[string]any{"reuse": "n"}}},
+			}},
+			{"type": "sudoku", "settings": map[string]any{"password": "p", "customTables": []any{"xpxvvpvv"}, "paddingMin": float64(10), "paddingMax": float64(30)}},
+			{"type": "xmc", "settings": map[string]any{
+				"password": "p", "hostname": "mc.example.com",
+				"profiles": []any{map[string]any{"username": "Steve", "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "texturesValue": "v", "texturesSignature": "s"}},
+			}},
+		},
+		UDP: []map[string]any{
+			{"type": "noise", "settings": map[string]any{"noise": []any{map[string]any{"rand": "10-20", "randRange": "0-255"}}}},
+			{"type": "xdns", "settings": map[string]any{
+				"domains":   []any{map[string]any{"names": []any{"t.example.com"}, "lenLimit": float64(200), "labelLimit": float64(60)}},
+				"resolvers": []any{map[string]any{"addrs": []any{"1.1.1.1"}, "types": []any{float64(1)}, "edns0": float64(4096)}},
+				"extraPoll": float64(2),
+			}},
+		},
+	}).Parse()
+	require.NoError(t, err)
+	require.True(t, fm.HasTCP())
+	require.True(t, fm.HasUDP())
+
+	fm, err = (&Option{UDP: []map[string]any{
+		{"type": "udphop", "settings": map[string]any{"mode": "intervalLocal", "interval": "10-20", "remoteIPs": []any{"10.0.0.1"}, "remotePorts": []any{"443", "20000-30000"}}},
+	}}).Parse()
+	require.NoError(t, err)
+	require.True(t, fm.HasUDP())
+}

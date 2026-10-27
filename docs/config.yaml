@@ -1144,6 +1144,9 @@ proxies: # socks5
     servername: xxx.com
     xhttp-opts:
       path: "/"
+    # serverDescription: "..."  # 订阅附带的服务器说明（Remnawave 的 Happ / Xray JSON 订阅），核心不使用，供读取 YAML 的客户端显示 / the server note of a subscription (Remnawave's Happ links and Xray JSON); the core ignores it, apps reading the YAML show it
+    # finalmask 也可按 Xray JSON 原样书写（settings 嵌套、驼峰键名如 randRange），订阅中的 vless:// 链接 (fm=) 与 Xray JSON 订阅会自动带入
+    # finalmask may be written as in Xray JSON too (settings nested, camelCase keys such as randRange); vless:// links (fm=) and Xray JSON subscriptions carry it over
     finalmask:
       tcp:
         # fragment: 把最初的写入切成小段 / fragment: cut the first writes into pieces

@@ -5,7 +5,9 @@ package option
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"unicode"
 
 	"github.com/metacubex/mihomo/common/structure"
 	"github.com/metacubex/mihomo/transport/finalmask"
@@ -60,7 +62,62 @@ func maskEntry(entry map[string]any) (string, map[string]any, error) {
 			return "", nil, fmt.Errorf("finalmask: settings of %s must be a map", typ)
 		}
 	}
-	return typ, settings, nil
+	return typ, normalizeKeys(settings).(map[string]any), nil
+}
+
+// normalizeKeys brings the camelCase keys of Xray's JSON (randRange,
+// remoteIPs, texturesValue) to the kebab-case of the option tags, nested
+// maps and lists included, so a block copied from an Xray config or carried
+// by a share link decodes like one written for the YAML. Keys without
+// capitals, kebab-case or snake_case, pass as they are.
+func normalizeKeys(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			out[kebabKey(k)] = normalizeKeys(val)
+		}
+		return out
+	case map[any]any:
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			out[kebabKey(fmt.Sprint(k))] = normalizeKeys(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, val := range v {
+			out[i] = normalizeKeys(val)
+		}
+		return out
+	case float64:
+		// JSON numbers arrive as float64; a whole one decodes as an
+		// integer, so "delay": 0 reads as the range 0, not "0E+00".
+		if v == math.Trunc(v) && math.Abs(v) < 1<<53 {
+			return int64(v)
+		}
+	}
+	return v
+}
+
+// kebabKey puts a dash before a capital that follows a lower-case letter or
+// a digit and lowers the key: randRange to rand-range, remoteIPs to
+// remote-ips (a run of capitals stays one word).
+func kebabKey(k string) string {
+	var b strings.Builder
+	prev := rune(0)
+	for _, r := range k {
+		if unicode.IsUpper(r) {
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				b.WriteByte('-')
+			}
+			b.WriteRune(unicode.ToLower(r))
+		} else {
+			b.WriteRune(r)
+		}
+		prev = r
+	}
+	return b.String()
 }
 
 func decodeMask(settings map[string]any, option any) error {

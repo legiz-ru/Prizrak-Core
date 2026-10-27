@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -12,13 +13,18 @@ var (
 )
 
 // DecodeBase64 try to decode content from the given bytes,
-// which can be in base64.RawStdEncoding, base64.StdEncoding or just plaintext.
+// which can be in base64.RawStdEncoding, base64.StdEncoding, their URL-safe
+// variants or just plaintext. Whitespace and a byte order mark around the
+// content are ignored.
 func DecodeBase64(buf []byte) []byte {
-	result, err := tryDecodeBase64(buf)
-	if err != nil {
-		return buf
+	trimmed := bytes.TrimSpace(bytes.TrimPrefix(buf, []byte("\xef\xbb\xbf")))
+	if result, err := tryDecodeBase64(trimmed); err == nil {
+		return result
 	}
-	return result
+	if result, err := tryDecodeBase64URL(trimmed); err == nil {
+		return result
+	}
+	return buf
 }
 
 func tryDecodeBase64(buf []byte) ([]byte, error) {
@@ -26,6 +32,18 @@ func tryDecodeBase64(buf []byte) ([]byte, error) {
 	n, err := encRaw.Decode(dBuf, buf)
 	if err != nil {
 		n, err = enc.Decode(dBuf, buf)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return dBuf[:n], nil
+}
+
+func tryDecodeBase64URL(buf []byte) ([]byte, error) {
+	dBuf := make([]byte, base64.RawURLEncoding.DecodedLen(len(buf)))
+	n, err := base64.RawURLEncoding.Decode(dBuf, buf)
+	if err != nil {
+		n, err = base64.URLEncoding.Decode(dBuf, buf)
 		if err != nil {
 			return nil, err
 		}

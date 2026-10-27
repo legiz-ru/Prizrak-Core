@@ -13,7 +13,7 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 	// Xray VMessAEAD / VLESS share link standard
 	// https://github.com/XTLS/Xray-core/discussions/716
 	query := url.Query()
-	proxy["name"] = uniqueName(names, url.Fragment)
+	applyName(proxy, names, url.Fragment)
 	if url.Hostname() == "" {
 		return errors.New("url.Hostname() is empty")
 	}
@@ -37,7 +37,16 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 			proxy["alpn"] = strings.Split(alpn, ",")
 		}
 		if pcs := query.Get("pcs"); pcs != "" {
-			proxy["fingerprint"] = pcs
+			if pin := normalizeCertPin(pcs); pin != "" {
+				proxy["fingerprint"] = pin
+			} else {
+				proxy["fingerprint"] = pcs
+			}
+		}
+		// vcn: verifyPeerCertByName of Xray, the name the certificate is
+		// checked against instead of the SNI.
+		if vcn := query.Get("vcn"); vcn != "" {
+			proxy["name-cert-verify"] = vcn
 		}
 	}
 	if sni := query.Get("sni"); sni != "" {
@@ -47,6 +56,10 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 		realityOpts := map[string]any{
 			"public-key": realityPublicKey,
 			"short-id":   query.Get("sid"),
+		}
+		// pqv: the ML-DSA-65 verify key of REALITY.
+		if pqv := query.Get("pqv"); pqv != "" {
+			realityOpts["mldsa65-verify"] = pqv
 		}
 		if value := query.Get("support-x25519mlkem768"); value != "" {
 			if enabled, err := strconv.ParseBool(value); err == nil {
@@ -155,6 +168,11 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 			xhttpOpts["mode"] = mode
 		}
 
+		// x_padding_bytes beside extra, as xray2mihomo writes links.
+		if padding := query.Get("x_padding_bytes"); padding != "" {
+			xhttpOpts["x-padding-bytes"] = padding
+		}
+
 		if extra := query.Get("extra"); extra != "" {
 			var extraMap map[string]any
 			if err := json.Unmarshal([]byte(extra), &extraMap); err == nil {
@@ -165,6 +183,8 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 
 		proxy["xhttp-opts"] = xhttpOpts
 	}
+
+	applyFinalMask(proxy, query)
 
 	return nil
 }
@@ -230,6 +250,8 @@ func parseXHTTPExtra(extra map[string]any, opts map[string]any) {
 	}
 
 	if v, ok := extra["uplinkHTTPMethod"].(string); ok && v != "" {
+		opts["uplink-http-method"] = v
+	} else if v, ok := extra["uplinkHttpMethod"].(string); ok && v != "" {
 		opts["uplink-http-method"] = v
 	}
 

@@ -43,10 +43,9 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			}
 
 			query := urlHysteria.Query()
-			name := uniqueName(names, urlHysteria.Fragment)
 			hysteria := make(map[string]any, 20)
 
-			hysteria["name"] = name
+			applyName(hysteria, names, urlHysteria.Fragment)
 			hysteria["type"] = scheme
 			hysteria["server"] = urlHysteria.Hostname()
 			hysteria["port"] = urlHysteria.Port()
@@ -80,10 +79,9 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			}
 
 			query := urlHysteria2.Query()
-			name := uniqueName(names, urlHysteria2.Fragment)
 			hysteria2 := make(map[string]any, 20)
 
-			hysteria2["name"] = name
+			applyName(hysteria2, names, urlHysteria2.Fragment)
 			hysteria2["type"] = "hysteria2"
 			hysteria2["server"] = urlHysteria2.Hostname()
 			if port := urlHysteria2.Port(); port != "" {
@@ -116,6 +114,16 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			} else if auth := urlHysteria2.User.String(); auth != "" {
 				hysteria2["password"] = auth
 			}
+			// fm: the finalmask of the Xray-core fork's hysteria2 (the
+			// salamander and udphop masks, quicParams), as Remnawave links it.
+			if raw := query.Get("fm"); raw != "" {
+				var fm map[string]any
+				if err := json.Unmarshal([]byte(raw), &fm); err != nil {
+					log.Warnln("finalmask of %v is not valid JSON, dropped: %s", hysteria2["name"], err)
+				} else {
+					applyHysteria2FinalMask(hysteria2, fm)
+				}
+			}
 
 			proxies = append(proxies, hysteria2)
 
@@ -132,7 +140,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			query := urlTUIC.Query()
 
 			tuic := make(map[string]any, 20)
-			tuic["name"] = uniqueName(names, urlTUIC.Fragment)
+			applyName(tuic, names, urlTUIC.Fragment)
 			tuic["type"] = scheme
 			tuic["server"] = urlTUIC.Hostname()
 			tuic["port"] = urlTUIC.Port()
@@ -168,10 +176,9 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 
 			query := urlTrojan.Query()
 
-			name := uniqueName(names, urlTrojan.Fragment)
 			trojan := make(map[string]any, 20)
 
-			trojan["name"] = name
+			applyName(trojan, names, urlTrojan.Fragment)
 			trojan["type"] = scheme
 			trojan["server"] = urlTrojan.Hostname()
 			trojan["port"] = urlTrojan.Port()
@@ -214,8 +221,16 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			}
 
 			if pcs := query.Get("pcs"); pcs != "" {
-				trojan["fingerprint"] = pcs
+				if pin := normalizeCertPin(pcs); pin != "" {
+					trojan["fingerprint"] = pin
+				} else {
+					trojan["fingerprint"] = pcs
+				}
 			}
+			if vcn := query.Get("vcn"); vcn != "" {
+				trojan["name-cert-verify"] = vcn
+			}
+			applyFinalMask(trojan, query)
 
 			proxies = append(proxies, trojan)
 
@@ -403,7 +418,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 				continue
 			}
 
-			name := uniqueName(names, urlSS.Fragment)
+			fragment := urlSS.Fragment
 			port := urlSS.Port()
 
 			if port == "" {
@@ -442,7 +457,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 
 			ss := make(map[string]any, 10)
 
-			ss["name"] = name
+			applyName(ss, names, fragment)
 			ss["type"] = scheme
 			ss["server"] = urlSS.Hostname()
 			ss["port"] = urlSS.Port()

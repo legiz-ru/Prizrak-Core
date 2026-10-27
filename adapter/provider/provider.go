@@ -382,16 +382,25 @@ func NewProxiesParser(pdName string, tunnel C.Tunnel, filter string, excludeFilt
 			return nil, fmt.Errorf("decrypt config error: %w", err)
 		}
 
-		if err := yaml.Unmarshal(buf, schema); err != nil {
-			proxies, err1 := convert.ConvertsV2Ray(buf)
+		if err := yaml.Unmarshal(buf, schema); err != nil || schema.Proxies == nil {
+			if err == nil {
+				err = errors.New("file must have a `proxies` field")
+			}
+			// Not mihomo YAML: an Xray JSON subscription (an array of
+			// configs, or one config), else share links, base64 or plain.
+			var (
+				proxies []map[string]any
+				err1    error
+			)
+			if convert.IsXrayJSON(buf) {
+				proxies, err1 = convert.ConvertsXrayJSON(buf)
+			} else {
+				proxies, err1 = convert.ConvertsV2Ray(buf)
+			}
 			if err1 != nil {
 				return nil, fmt.Errorf("%w, %w", err, err1)
 			}
 			schema.Proxies = proxies
-		}
-
-		if schema.Proxies == nil {
-			return nil, errors.New("file must have a `proxies` field")
 		}
 
 		proxies := []C.Proxy{}
