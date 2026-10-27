@@ -1068,7 +1068,7 @@ proxies: # socks5
       # x-padding-header: Referer
       # x-padding-placement: queryInHeader # Available: queryInHeader, cookie, header, query
       # x-padding-method: repeat-x # Available: repeat-x, tokenish
-      # uplink-http-method: POST # Available: POST, PUT, PATCH, DELETE
+      # uplink-http-method: POST # Available: POST, PUT, PATCH, DELETE, GET (GET 仅 packet-up，数据放在 header/cookie/body / GET for packet-up only, data in header/cookie/body)
       # session-placement: path # Available: path, query, cookie, header
       # session-key: ""
       # seq-placement: path # Available: path, query, cookie, header

@@ -117,7 +117,7 @@ func (c *Config) GetRequestHeader() http.Header {
 func (c *Config) GetRequestHeaderWithPayload(payload []byte, uplinkChunkSize Range) http.Header {
 	header := c.GetRequestHeader()
 
-	key := c.UplinkDataKey
+	key := c.GetNormalizedUplinkDataKey()
 	encodedData := base64.RawURLEncoding.EncodeToString(payload)
 
 	for i := 0; len(encodedData) > 0; i++ {
@@ -137,7 +137,7 @@ func (c *Config) GetRequestHeaderWithPayload(payload []byte, uplinkChunkSize Ran
 func (c *Config) GetRequestCookiesWithPayload(payload []byte, uplinkChunkSize Range) []*http.Cookie {
 	cookies := []*http.Cookie{}
 
-	key := c.UplinkDataKey
+	key := c.GetNormalizedUplinkDataKey()
 	encodedData := base64.RawURLEncoding.EncodeToString(payload)
 
 	for i := 0; len(encodedData) > 0; i++ {
@@ -190,7 +190,32 @@ func (c *Config) GetNormalizedUplinkHTTPMethod() string {
 	if c.UplinkHTTPMethod == "" {
 		return "POST"
 	}
-	return c.UplinkHTTPMethod
+	return strings.ToUpper(c.UplinkHTTPMethod)
+}
+
+// CheckUplinkHTTPMethod refuses what Xray refuses: GET uploads carry a seq,
+// so they exist in packet-up mode only.
+func (c *Config) CheckUplinkHTTPMethod() error {
+	if c.GetNormalizedUplinkHTTPMethod() == http.MethodGet && c.NormalizedMode() != "packet-up" {
+		return fmt.Errorf("xhttp uplink-http-method GET works in mode packet-up only, not %s", c.NormalizedMode())
+	}
+	return nil
+}
+
+// GetNormalizedUploadScMaxEachPostBytes sizes the client's packet-up
+// uploads. Data in headers or cookies travels base64-encoded within the
+// server's header limit (8 KiB in Xray's hub, padding included), so without
+// a setting those placements get 4 KiB per upload instead of the 1 MB that
+// a body takes; the server keeps accepting up to
+// GetNormalizedScMaxEachPostBytes.
+func (c *Config) GetNormalizedUploadScMaxEachPostBytes() (Range, error) {
+	if c.ScMaxEachPostBytes == "" {
+		switch c.GetNormalizedUplinkDataPlacement() {
+		case PlacementHeader, PlacementCookie:
+			return Range{Min: 4 * 1024, Max: 4 * 1024}, nil
+		}
+	}
+	return c.GetNormalizedScMaxEachPostBytes()
 }
 
 func (c *Config) GetNormalizedScStreamUpServerSecs() (Range, error) {
@@ -282,6 +307,19 @@ func (c *Config) GetNormalizedUplinkDataPlacement() string {
 		return PlacementBody
 	}
 	return c.UplinkDataPlacement
+}
+
+// GetNormalizedUplinkDataKey is the name the uplink data travels under when
+// it is not in the body: Xray's defaults, x_data for cookies and X-Data
+// otherwise, so the two ends agree without setting the key.
+func (c *Config) GetNormalizedUplinkDataKey() string {
+	if c.UplinkDataKey != "" {
+		return c.UplinkDataKey
+	}
+	if c.GetNormalizedUplinkDataPlacement() == PlacementCookie {
+		return "x_data"
+	}
+	return "X-Data"
 }
 
 func (c *Config) GetNormalizedSessionKey() string {

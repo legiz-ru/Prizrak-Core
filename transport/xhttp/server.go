@@ -328,11 +328,13 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// packet-up upload: POST /path/{session}/{seq}
-	if r.Method != http.MethodGet && sessionId != "" && seqStr != "" && h.allowPacketUpUpload() {
+	// packet-up upload: POST /path/{session}/{seq}, or any other method the
+	// client was given as uplink-http-method, GET included: as in Xray, a
+	// request with a seq is an upload whatever its method.
+	if sessionId != "" && seqStr != "" && h.allowPacketUpUpload() {
 		scMaxEachPostBytes := h.scMaxEachPostBytes.Max
 		dataPlacement := h.config.GetNormalizedUplinkDataPlacement()
-		uplinkDataKey := h.config.UplinkDataKey
+		uplinkDataKey := h.config.GetNormalizedUplinkDataKey()
 		var headerPayload []byte
 		var err error
 		if dataPlacement == PlacementAuto || dataPlacement == PlacementHeader {
@@ -467,8 +469,8 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// stream-one: POST /path
-	if r.Method != http.MethodGet && sessionId == "" && seqStr == "" && h.allowStreamOne() {
+	// stream-one: any method without a session (POST /path, GET /path), as in Xray.
+	if sessionId == "" && seqStr == "" && h.allowStreamOne() {
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)

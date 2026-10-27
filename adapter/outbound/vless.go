@@ -718,6 +718,10 @@ func NewVless(option VlessOption) (*Vless, error) {
 			ReuseConfig:          reuseCfg,
 		}
 
+		if err := cfg.CheckUplinkHTTPMethod(); err != nil {
+			return nil, err
+		}
+
 		makeTransport := func() http.RoundTripper {
 			return xhttp.NewTransport(
 				func(ctx context.Context) (net.Conn, error) {

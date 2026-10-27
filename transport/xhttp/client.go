@@ -258,7 +258,7 @@ func NewClient(cfg *Config, makeTransport TransportMaker, makeDownloadTransport 
 	default:
 		return nil, fmt.Errorf("xhttp mode %s is not implemented yet", mode)
 	}
-	scMaxEachPostBytes, err := cfg.GetNormalizedScMaxEachPostBytes()
+	scMaxEachPostBytes, err := cfg.GetNormalizedUploadScMaxEachPostBytes()
 	if err != nil {
 		return nil, err
 	}
