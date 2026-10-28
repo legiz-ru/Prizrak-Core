@@ -109,8 +109,8 @@ func TestFlowSendWindowBelowClientWindow(t *testing.T) {
 		}
 		h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, 1, int(w)) })
 		sent += w
-		for left := w; left > 0; left -= min(left, 16<<10) {
-			h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(1, uint32(min(left, 16<<10))) })
+		for left := w; left > 0; left -= flowMin(left, 16<<10) {
+			h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(1, uint32(flowMin(left, 16<<10))) })
 		}
 	}
 	if sent < 8*limit {
@@ -167,7 +167,7 @@ func TestFlowSendWindowIsReturned(t *testing.T) {
 func finishedRounds(h *flowHarness, rounds int) (sent []int64) {
 	next := uint32(1)
 	for id := range h.toServer.streams {
-		next = max(next, id+2)
+		next = flowMax(next, id+2)
 	}
 	for ; rounds > 0; rounds-- {
 		var ids []uint32
@@ -231,8 +231,8 @@ func TestFlowSendWindowCountsFinishedDownloads(t *testing.T) {
 		t.Fatalf("with %d unread the next twenty downloads were sent %d, want that window each, %d", sent[0], sent[1], 20*flowShownLimited)
 	}
 	// The client reads it all, 16 KiB at a time.
-	for left := sent[0] + sent[1]; left > 0; left -= min(left, 16<<10) {
-		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, uint32(min(left, 16<<10))) })
+	for left := sent[0] + sent[1]; left > 0; left -= flowMin(left, 16<<10) {
+		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, uint32(flowMin(left, 16<<10))) })
 	}
 	if again := finishedRounds(h, 1); again[0] != flowServerSendWindow {
 		t.Fatalf("once the client had read everything twenty downloads were sent %d, want %d", again[0], flowServerSendWindow)
@@ -292,7 +292,7 @@ func TestFlowSendWindowCreditFollowsData(t *testing.T) {
 			fr.WriteWindowUpdate(0, 16<<10)
 		})
 		send()
-		most = max(most, sent-read-16<<10)
+		most = flowMax(most, sent-read-16<<10)
 		if unused := h.c.streams[1].downForwarded - h.c.streams[1].downSent; unused > flowStartWindow-flowShownFull {
 			t.Fatalf("after %d read the stack has %d forwarded and not sent, more than the %d of a stack shown %d", read, unused, flowStartWindow-flowShownFull, flowShownFull)
 		}
@@ -603,7 +603,7 @@ func TestFlowSendWindowSettingsCost(t *testing.T) {
 		for try := 0; try < 5; try++ {
 			start := time.Now()
 			feedFrames(t, h, settings, n)
-			best = min(best, time.Since(start))
+			best = flowMin(best, time.Since(start))
 		}
 		return best
 	}
@@ -611,7 +611,7 @@ func TestFlowSendWindowSettingsCost(t *testing.T) {
 	n := 50
 	few := cost(hFew, n)
 	for few < enough && n < mostFrames {
-		n = min(2*n, mostFrames)
+		n = flowMin(2*n, mostFrames)
 		few = cost(hFew, n)
 	}
 	if few < enough {
@@ -657,7 +657,7 @@ func refusedAtFullLimit(tb testing.TB, n int) (c *flowConn, window int64) {
 	// What the client holds of the completed bodies leaves no room.
 	held := c.downOpen*int64(c.clientShown) + c.downOpenForwarded
 	c.downConnHigh = 1 << 30
-	c.downConnWindow = c.downConnHigh - max(flowServerSendWindow-held, 0)
+	c.downConnWindow = c.downConnHigh - flowMax(flowServerSendWindow-held, 0)
 	c.downConnSmall = true
 	c.lastPing = time.Now()
 	if c.clientHolds() < flowServerSendWindow {
@@ -667,14 +667,11 @@ func refusedAtFullLimit(tb testing.TB, n int) (c *flowConn, window int64) {
 }
 
 // TestFlowSendWindowConnectionCreditAllocs counts what a connection
-// WINDOW_UPDATE of 4 KiB allocates on that connection. Such a frame looks at
-// no stream and allocates nothing. A queue of the streams the limit kept
-// credit from, walked after every frame from the client, handed nothing on
-// here while credit quanta held a grant of 4 KiB back, and put every stream
-// back: it allocated once a frame with sixty streams. The quanta and the
-// queue are gone; connection credit still looks at no stream. The count does not depend on
-// the clock; BenchmarkFlowConnectionCredit has the time, which a walk that
-// allocated nothing would show only there.
+// WINDOW_UPDATE of 4 KiB allocates on that connection, with sixty streams
+// open. Such a frame looks at no stream and allocates nothing; a walk over
+// the streams after every frame from the client would allocate once a frame.
+// The count does not depend on the clock; BenchmarkFlowConnectionCredit has
+// the time, which a walk that allocated nothing would show only there.
 func TestFlowSendWindowConnectionCreditAllocs(t *testing.T) {
 	credit := frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 4<<10) })
 	c, window := refusedAtFullLimit(t, 60)

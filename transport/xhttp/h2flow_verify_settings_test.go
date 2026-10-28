@@ -17,7 +17,7 @@ import (
 // writeDataSplit writes n bytes of DATA on stream id in default-size frames.
 func writeDataSplit(fr *http2.Framer, id uint32, n int) {
 	for n > 0 {
-		m := min(n, h2MinMaxFrameSize)
+		m := flowMin(n, h2MinMaxFrameSize)
 		fr.WriteData(id, false, make([]byte, m))
 		n -= m
 	}
@@ -302,7 +302,7 @@ func TestFlowMalformedSettingsGetStockErrors(t *testing.T) {
 	}
 }
 
-// TestFlowOversizedSettingsGetStockErrors (added for bdbac60e) sends the
+// TestFlowOversizedSettingsGetStockErrors sends the
 // oversized SETTINGS of TestFlowOversizedSettingsFailClosed to a stock and a
 // governed server: net/http rejects more than 100 settings itself, so the
 // governor's pass-through does not change what a peer observes.

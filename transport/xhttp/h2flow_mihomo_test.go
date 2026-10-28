@@ -140,7 +140,7 @@ func TestFlowMihomoIntegrityDuplex(t *testing.T) {
 				pr, pw := io.Pipe()
 				go func() {
 					for off := 0; off < len(data); {
-						n := min(len(data)-off, 1+mrand.IntN(64<<10))
+						n := flowMin(len(data)-off, 1+mrand.IntN(64<<10))
 						if _, err := pw.Write(data[off : off+n]); err != nil {
 							return
 						}

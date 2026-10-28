@@ -33,7 +33,7 @@ func TestFlowWindowShrinks(t *testing.T) {
 		var get func(string) (*http.Response, error)
 		var client *flowClient
 		if role == "client" {
-			client = newFlowTestClient(proxy, true)
+			client = newFlowTestClient(t, proxy, true)
 			get = client.Get
 		} else {
 			get = h2Client(proxy).Get
@@ -45,7 +45,7 @@ func TestFlowWindowShrinks(t *testing.T) {
 		state := func() (unread int64, cap int32) {
 			f := func(c *flowConn) {
 				for _, s := range c.streams {
-					unread, cap = max(unread, s.downSent-s.down.returned), max(cap, s.down.cap)
+					unread, cap = flowMax(unread, s.downSent-s.down.returned), flowMax(cap, s.down.cap)
 				}
 			}
 			if client != nil {
