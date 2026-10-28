@@ -76,6 +76,19 @@ func TestAcceptsXraySettings(t *testing.T) {
 	require.True(t, fm.HasUDP())
 }
 
+// The compact resolver spelling of the first Xray xdns builds the mask too.
+func TestXDNSCompactResolvers(t *testing.T) {
+	fm, err := (&Option{UDP: []map[string]any{
+		{"type": "xdns", "resolvers": []any{"t.example.com:aaaa+udp://1.1.1.1:53", "t.example.com:aaaa+udp://8.8.8.8"}},
+	}}).Parse()
+	require.NoError(t, err)
+	require.True(t, fm.HasUDP())
+	_, err = (&Option{UDP: []map[string]any{
+		{"type": "xdns", "resolvers": []any{"t.example.com+quic://1.1.1.1"}},
+	}}).Parse()
+	require.Error(t, err)
+}
+
 func TestRejects(t *testing.T) {
 	for name, o := range map[string]*Option{
 		"no type":        {TCP: []map[string]any{{"packets": "tlshello"}}},
