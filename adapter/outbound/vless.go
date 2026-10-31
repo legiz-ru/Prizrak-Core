@@ -20,6 +20,7 @@ import (
 	"github.com/metacubex/mihomo/transport/finalmask"
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/jls"
+	"github.com/metacubex/mihomo/transport/mkcp"
 	"github.com/metacubex/mihomo/transport/restls"
 	"github.com/metacubex/mihomo/transport/shadowtls"
 	"github.com/metacubex/mihomo/transport/tuic/common"
@@ -84,6 +85,7 @@ type VlessOption struct {
 	GrpcOpts          GrpcOptions       `proxy:"grpc-opts,omitempty"`
 	WSOpts            WSOptions         `proxy:"ws-opts,omitempty"`
 	XHTTPOpts         XHTTPOptions      `proxy:"xhttp-opts,omitempty"`
+	MKCPOpts          MKCPOptions       `proxy:"mkcp-opts,omitempty"`
 	FinalMask         *FinalMaskOption  `proxy:"finalmask,omitempty"`
 	WSHeaders         map[string]string `proxy:"ws-headers,omitempty"`
 	SkipCertVerify    bool              `proxy:"skip-cert-verify,omitempty"`
@@ -365,9 +367,44 @@ func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 		return v.gunClient.Dial()
 	case "xhttp":
 		return v.xhttpClient.Dial(ctx)
+	case "mkcp", "kcp":
+		return v.dialMKCP(ctx)
 	default:
 	}
 	return v.dialTCP(ctx, v.addr)
+}
+
+// dialMKCP opens an mKCP connection as Xray-core does since finalmask: the
+// segments go out without mKCP's own header and authentication, through
+// the finalmask UDP chain when there is one (an xdns tunnel, a header-*
+// mask), straight to the server otherwise.
+func (v *Vless) dialMKCP(ctx context.Context) (net.Conn, error) {
+	var raw net.Conn
+	if v.finalMask.HasUDP() {
+		dest, err := finalmask.ParseDestination(v.addr)
+		if err != nil {
+			return nil, err
+		}
+		pc, raddr, err := v.finalMask.DialUDP(ctx, dest, v.finalMaskDialer)
+		if err != nil {
+			return nil, err
+		}
+		raw = N.NewBindPacketConn(pc, raddr)
+	} else {
+		var err error
+		raw, err = v.dialer.DialContext(ctx, "udp", v.addr)
+		if err != nil {
+			return nil, err
+		}
+	}
+	cfg := v.option.MKCPOpts.Build()
+	cfg.Plain = true
+	c, err := mkcp.Dial(ctx, raw, cfg)
+	if err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 // dialTCP dials addr and applies the finalmask TCP chain, under TLS.
@@ -608,6 +645,17 @@ func NewVless(option VlessOption) (*Vless, error) {
 	}
 	if securityMode != "" && !option.TLS {
 		return nil, fmt.Errorf("%s requires TLS", securityMode)
+	}
+	if option.Network == "mkcp" || option.Network == "kcp" {
+		switch securityMode {
+		case "ShadowTLS", "Restls", "JLS":
+			return nil, fmt.Errorf("%s only supports TCP transports", securityMode)
+		}
+		// Xray-core moved them into finalmask, and a VLESS mKCP server
+		// speaks the finalmask framing.
+		if option.MKCPOpts.Seed != "" || option.MKCPOpts.Header != "" {
+			return nil, errors.New("vless over mkcp has no mkcp-opts seed and header: Xray-core replaced them with finalmask udp masks (header-*, mkcp-aes128gcm)")
+		}
 	}
 
 	switch option.Network {

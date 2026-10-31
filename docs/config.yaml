@@ -812,6 +812,28 @@ proxies: # socks5
       seed: "" # 启用 AES-GCM 认证时使用的种子，留空使用默认认证
       header: "" # 伪装包头，可选：none/srtp/utp/wechat-video/dtls/wireguard
 
+  # vless over mKCP: 同 Xray-core (finalmask 之后)，mKCP 不再自带包头与认证 (seed/header 已改为 finalmask 掩码)，udp 掩码包在 mKCP 之下
+  # vless over mKCP as Xray-core frames it since finalmask: no header or authentication of its own (seed and header are finalmask masks now); UDP masks go under it
+  # 例：经 xdns 走 DNS 隧道，MTU 需小，以便数据包装进 DNS 查询 / e.g. a DNS tunnel through xdns, with an MTU small enough for a packet to fit a query
+  - name: "vless-mkcp-xdns"
+    type: vless
+    server: 77.88.8.8   # 隧道只经解析器到达服务端，此处同 Xray 配置 / the tunnel reaches the server through the resolvers only; as in the Xray config
+    port: 53
+    uuid: uuid
+    udp: true
+    packet-encoding: xudp
+    network: mkcp
+    mkcp-opts:
+      mtu: 77
+      tti: 100
+      congestion: false
+    finalmask:
+      udp:
+        - type: xdns
+          resolvers:
+            - "t.example.com:aaaa+udp://77.88.8.8:53"
+            - "t.example.com:aaaa+udp://8.8.8.8:53"
+
   - name: "vmess-mekya"
     type: vmess
     server: server
@@ -1125,8 +1147,8 @@ proxies: # socks5
   # finalmask: the finalmask layer of Xray-core (the Jolymmiles fork), for vless and trojan only
   # tcp 掩码包在 TLS/REALITY 之下、TCP 套接字之上，所有 network 都生效 (tcp/ws/grpc/h2/http/xhttp)
   # TCP masks wrap the socket under TLS/REALITY, with every network (tcp/ws/grpc/h2/http/xhttp)
-  # udp 掩码只用于 xhttp over HTTP/3 (network: xhttp, alpn: [h3]) 的 QUIC 套接字
-  # UDP masks wrap the QUIC socket of xhttp over HTTP/3 only (network: xhttp, alpn: [h3])
+  # udp 掩码用于 vless 的 mKCP (network: mkcp) 与 xhttp over HTTP/3 (network: xhttp, alpn: [h3]) 的 UDP 套接字
+  # UDP masks wrap the socket of vless over mKCP (network: mkcp) and the QUIC socket of xhttp over HTTP/3 (network: xhttp, alpn: [h3])
   # 列表顺序同 Xray：第一项最靠近 TLS，最后一项最靠近网络（上线的就是它）
   # The order is Xray's: the first entry is nearest to TLS, the last one is what the network sees
   # 每一项写 type 加该掩码的设置；也接受 Xray 的 settings 嵌套写法

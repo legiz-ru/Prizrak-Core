@@ -19,6 +19,9 @@ const (
 
 const dataSegmentOverhead = 18
 
+// ackSegmentOverhead is the size of an ack segment without its numbers.
+const ackSegmentOverhead = 17
+
 type segment interface {
 	conversation() uint16
 	command() command
@@ -63,7 +66,7 @@ type ackSegment struct {
 
 func (s *ackSegment) conversation() uint16 { return s.conv }
 func (*ackSegment) command() command       { return commandACK }
-func (s *ackSegment) byteSize() int        { return 17 + len(s.numberList)*4 }
+func (s *ackSegment) byteSize() int        { return ackSegmentOverhead + len(s.numberList)*4 }
 
 func (s *ackSegment) serialize(b []byte) {
 	binary.BigEndian.PutUint16(b, s.conv)

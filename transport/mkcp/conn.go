@@ -34,6 +34,7 @@ type Conn struct {
 	conv          uint16
 	created       time.Time
 	mss           int
+	maxAcks       int
 	rto           uint32
 	rttVariation  uint32
 	srtt          uint32
@@ -128,8 +129,20 @@ func newConn(localAddr, remoteAddr net.Addr, conv uint16, writer packetWriter, c
 		flushNotify:   make(chan struct{}, 1),
 		done:          make(chan struct{}),
 	}
-	if c.mss < 576 {
+	if !cfg.Plain && c.mss < 576 {
 		c.mss = 576
+	}
+	if c.mss < 1 {
+		c.mss = 1
+	}
+	// An ack segment is 17 bytes and 4 per number; it has to fit in a
+	// packet, which matters with the small MTU of a DNS tunnel (xdns).
+	c.maxAcks = (c.mss + dataSegmentOverhead - ackSegmentOverhead) / 4
+	if c.maxAcks > 128 {
+		c.maxAcks = 128
+	}
+	if c.maxAcks < 1 {
+		c.maxAcks = 1
 	}
 	go c.flushLoop()
 	return c
@@ -593,7 +606,7 @@ func (c *Conn) flushAcksLocked(current uint32) []segment {
 			timeout = 20
 		}
 		item.nextFlush = current + timeout
-		if len(ack.numberList) == 128 {
+		if len(ack.numberList) >= c.maxAcks {
 			segments = append(segments, ack)
 			ack = c.newAckSegmentLocked()
 			c.ackDirty = false
@@ -601,7 +614,7 @@ func (c *Conn) flushAcksLocked(current uint32) []segment {
 	}
 	if c.ackDirty || len(ack.numberList) > 0 {
 		for _, number := range candidates {
-			if len(ack.numberList) == 128 {
+			if len(ack.numberList) >= c.maxAcks {
 				break
 			}
 			ack.numberList = append(ack.numberList, number)

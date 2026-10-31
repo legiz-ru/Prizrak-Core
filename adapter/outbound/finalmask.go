@@ -113,16 +113,20 @@ func finalMaskDialQUIC(ctx context.Context, fm *finalmask.FinalMask, fmDialer *f
 	return quicConn, nil
 }
 
-// checkFinalMaskNetwork refuses UDP masks where no transport would use them.
+// checkFinalMaskNetwork refuses UDP masks where no transport would use them:
+// VLESS over mKCP and xhttp over HTTP/3 are the UDP transports.
 func checkFinalMaskNetwork(fm *finalmask.FinalMask, proxyType, network string, alpn []string) error {
 	if !fm.HasUDP() {
 		return nil
 	}
+	if proxyType == "vless" && (network == "mkcp" || network == "kcp") {
+		return nil
+	}
 	if proxyType != "vless" || network != "xhttp" {
-		return fmt.Errorf("finalmask.udp is used by xhttp over HTTP/3 only (type: vless, network: xhttp, alpn: [h3]), not by %s over %s", proxyType, defaultNetwork(network))
+		return fmt.Errorf("finalmask.udp is used by mkcp and by xhttp over HTTP/3 only (type: vless, network: mkcp or network: xhttp with alpn: [h3]), not by %s over %s", proxyType, defaultNetwork(network))
 	}
 	if len(alpn) != 1 || alpn[0] != "h3" {
-		return errors.New("finalmask.udp is used by xhttp over HTTP/3 only, set alpn: [h3]")
+		return errors.New("finalmask.udp is used by mkcp and by xhttp over HTTP/3 only, set alpn: [h3]")
 	}
 	return nil
 }

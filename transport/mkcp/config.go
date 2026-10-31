@@ -16,6 +16,13 @@ type Config struct {
 	ReadBuffer       uint32
 	Seed             string
 	Header           string
+	// Plain leaves out mKCP's own packet header and authentication, as
+	// Xray-core does since finalmask took over its header and seed (they
+	// are the mkcp-original, mkcp-aes128gcm and header-* masks now): the
+	// segments go to the socket as they are, and a finalmask UDP chain
+	// under the connection, if any, shapes them. The MTU is then taken as
+	// given, without the 576-byte floor of the legacy framing.
+	Plain bool
 }
 
 func (c Config) mtu() uint32 {
@@ -85,6 +92,9 @@ func (c Config) receivingBufferSize() uint32 {
 }
 
 func (c Config) security() (cipher.AEAD, error) {
+	if c.Plain {
+		return nil, nil
+	}
 	if c.Seed == "" {
 		return newSimpleAuthenticator(), nil
 	}
@@ -97,5 +107,8 @@ func (c Config) security() (cipher.AEAD, error) {
 }
 
 func (c Config) packetHeader() packetHeader {
+	if c.Plain {
+		return nil
+	}
 	return newPacketHeader(c.Header)
 }
