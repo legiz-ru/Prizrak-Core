@@ -3,6 +3,8 @@ package config
 import (
 	"testing"
 
+	"github.com/metacubex/mihomo/component/pingconfig"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -137,7 +139,7 @@ func TestValidateDialerProxies(t *testing.T) {
 			config := RawConfig{Proxy: testCase.proxy}
 			// repeat so that different map iteration orders are covered
 			for i := 0; i < 20; i++ {
-				_, _, err := parseProxies(&config)
+				_, _, err := parseProxies(&config, pingconfig.NewRegistry())
 				if testCase.errs == nil {
 					assert.NoError(t, err)
 				} else if assert.Error(t, err) {

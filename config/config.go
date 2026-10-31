@@ -23,6 +23,7 @@ import (
 	"github.com/metacubex/mihomo/component/cidr"
 	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/component/geodata"
+	"github.com/metacubex/mihomo/component/pingconfig"
 	"github.com/metacubex/mihomo/component/process"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/smart/lightgbm"
@@ -217,6 +218,8 @@ type Config struct {
 	Tunnels       []LC.Tunnel
 	Sniffer       *sniffer.Config
 	TLS           *TLS
+	// PingProfiles are the ping-config profiles of the proxy groups, by url.
+	PingProfiles *pingconfig.Registry
 }
 
 type RawCors struct {
@@ -689,12 +692,14 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	}
 	config.TLS = tlsCfg
 
-	proxies, providers, err := parseProxies(rawCfg)
+	pingProfiles := pingconfig.NewRegistry()
+	proxies, providers, err := parseProxies(rawCfg, pingProfiles)
 	if err != nil {
 		return nil, err
 	}
 	config.Proxies = proxies
 	config.Providers = providers
+	config.PingProfiles = pingProfiles
 
 	listeners, err := parseListeners(rawCfg)
 	if err != nil {
@@ -896,7 +901,7 @@ func parseTLS(cfg *RawConfig) (*TLS, error) {
 	}, nil
 }
 
-func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
+func parseProxies(cfg *RawConfig, pingProfiles *pingconfig.Registry) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
 	proxies = make(map[string]C.Proxy)
 	providersMap = make(map[string]P.ProxyProvider)
 	proxiesConfig := cfg.Proxy
@@ -944,6 +949,15 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 		proxyList = append(proxyList, groupName)
 	}
 
+	// the order groups are written in, before the sort below reorders them:
+	// the first ping-config of a url is the first written
+	groupOrder := make(map[string]int, len(groupsConfig))
+	for idx, mapping := range groupsConfig {
+		if name, ok := mapping["name"].(string); ok {
+			groupOrder[name] = idx
+		}
+	}
+
 	// check if any loop exists and sort the ProxyGroups
 	if err := proxyGroupsDagSort(groupsConfig); err != nil {
 		return nil, nil, err
@@ -968,6 +982,13 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	slices.Sort(AllProxies)
 	slices.Sort(AllProviders)
 
+	type groupProfile struct {
+		order   int
+		group   string
+		profile *pingconfig.Profile
+	}
+	var groupProfiles []groupProfile
+
 	// parse proxy group
 	for idx, mapping := range groupsConfig {
 		group, err := outboundgroup.ParseProxyGroup(mapping, proxies, providersMap, AllProxies, AllProviders)
@@ -980,7 +1001,21 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 			return nil, nil, fmt.Errorf("proxy group %s: the duplicate name", groupName)
 		}
 
+		if pg, ok := group.(interface{ PingProfile() *pingconfig.Profile }); ok {
+			if profile := pg.PingProfile(); profile != nil {
+				groupProfiles = append(groupProfiles, groupProfile{order: groupOrder[groupName], group: groupName, profile: profile})
+			}
+		}
+
 		proxies[groupName] = adapter.NewProxy(group)
+	}
+
+	// one profile per url: the first group's checks it for all
+	slices.SortFunc(groupProfiles, func(a, b groupProfile) int { return a.order - b.order })
+	for _, gp := range groupProfiles {
+		if kept, conflict := pingProfiles.Add(gp.profile); conflict {
+			log.Warnln("[ping-config] group %s: its url is already checked by the ping-config of group %s; this one is ignored", gp.group, kept.Group)
+		}
 	}
 
 	var ps []C.Proxy

@@ -21,6 +21,7 @@ import (
 	mihomoHttp "github.com/metacubex/mihomo/component/http"
 	"github.com/metacubex/mihomo/component/iface"
 	"github.com/metacubex/mihomo/component/keepalive"
+	"github.com/metacubex/mihomo/component/pingconfig"
 	"github.com/metacubex/mihomo/component/profile"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/resolver"
@@ -99,6 +100,8 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	closeSmart()
 	updateExperimental(cfg.Experimental)
 	updateUsers(cfg.Users)
+	// before the providers start: their checks look the profiles up
+	pingconfig.SetActive(cfg.PingProfiles)
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)

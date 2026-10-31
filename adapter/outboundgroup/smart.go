@@ -663,7 +663,7 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 		fmt.Fprintf(&policyPriorityBuf, "%s:%.2f", rule.pattern, rule.factor)
 	}
 
-	return json.Marshal(map[string]any{
+	return json.Marshal(withPingConfig(map[string]any{
 		"type":            s.Type().String(),
 		"now":             s.Now(),
 		"all":             all,
@@ -679,7 +679,7 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 		"sampleRate":      s.sampleRate,
 		"preferASN":       s.preferASN,
 		"tolerance":       s.tolerance,
-	})
+	}, s.testUrl))
 }
 
 func (s *Smart) Providers() []provider.ProxyProvider {

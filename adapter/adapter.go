@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/convert"
 	"github.com/metacubex/mihomo/common/queue"
@@ -18,12 +19,14 @@ import (
 	"github.com/metacubex/mihomo/common/xsync"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/mmdb"
+	"github.com/metacubex/mihomo/component/pingconfig"
 	"github.com/metacubex/mihomo/component/smart"
 	"github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/metacubex/http"
+	mtls "github.com/metacubex/tls"
 )
 
 var UnifiedDelay = atomic.NewBool(false)
@@ -141,7 +144,12 @@ func (p *Proxy) LastDelayForTestUrl(url string) (delay uint16) {
 
 	if state, ok := p.extra.Load(url); ok {
 		alive = state.alive.Load()
-		history = state.history.Last()
+		if profile := pingconfig.Lookup(url); profile != nil && profile.Sampling > 1 {
+			// judged by the window, as AliveForTestUrl is
+			_, history.Delay = pingconfig.WindowStats(state.history.Copy(), time.Now(), profile.Window())
+		} else {
+			history = state.history.Last()
+		}
 	}
 
 	if !alive || history.Delay == 0 {
@@ -181,11 +189,22 @@ func (p *Proxy) MarshalJSON() ([]byte, error) {
 
 // URLTest get the delay for the specified URL
 // implements C.Proxy
+//
+// When url has a ping-config profile, the delay still comes from url, and
+// the profile's destination is asked after it: a node that does not answer
+// there in time fails the test. With the profile's connectivity set, a
+// failure while the device itself is offline is not recorded.
 func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
 	var satisfied bool
+	profile := pingconfig.Lookup(url)
 
 	defer func() {
 		alive := err == nil
+		if (!alive || !satisfied) && profile != nil && profile.Connectivity != "" &&
+			!pingconfig.Online(profile.Connectivity, func() error { return directProbe(profile.Connectivity, profile.Timeout) }) {
+			log.Debugln("%s failed %s while the network is down; not recorded", p.Name(), url)
+			return
+		}
 		record := C.DelayHistory{Time: time.Now()}
 		if alive {
 			record.Delay = t
@@ -197,9 +216,13 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 			p.history.Pop()
 		}
 
+		limit := defaultHistoriesNum
+		if profile != nil {
+			limit = profile.HistoryLimit(defaultHistoriesNum)
+		}
 		state, _ := p.extra.LoadOrStoreFn(url, func() *internalProxyState {
 			return &internalProxyState{
-				history: queue.New[C.DelayHistory](defaultHistoriesNum),
+				history: queue.New[C.DelayHistory](int64(limit)),
 				alive:   atomic.NewBool(true),
 			}
 		})
@@ -209,12 +232,14 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 			alive = false
 		}
 
-		state.alive.Store(alive)
 		state.history.Put(record)
-		if state.history.Len() > defaultHistoriesNum {
+		for state.history.Len() > int64(limit) {
 			state.history.Pop()
 		}
-
+		if profile != nil && profile.Sampling > 1 {
+			alive, _ = pingconfig.WindowStats(state.history.Copy(), record.Time, profile.Window())
+		}
+		state.alive.Store(alive)
 	}()
 
 	unifiedDelay := UnifiedDelay.Load()
@@ -244,26 +269,7 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 		return
 	}
 
-	transport := &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			return instance, nil
-		},
-		// from http.DefaultTransport
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig:       tlsConfig,
-	}
-
-	client := http.Client{
-		Timeout:   30 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
+	client := probeClient(instance, tlsConfig)
 	defer client.CloseIdleConnections()
 
 	resp, err := client.Do(req)
@@ -298,7 +304,153 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 		// that completed in under a millisecond as 1 ms
 		t = 1
 	}
+
+	if satisfied && profile != nil && profile.AsksDestination() {
+		if destErr := p.checkDestination(ctx, profile, url, client, tlsConfig); destErr != nil {
+			log.Debugln("%s failed the ping-config destination of %s: %v", p.Name(), url, destErr)
+			err = destErr
+			t = 0
+		}
+	}
 	return
+}
+
+// probeClient is the HTTP client of a delay test, over one dialed conn.
+func probeClient(instance net.Conn, tlsConfig *mtls.Config) *http.Client {
+	transport := &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return instance, nil
+		},
+		// from http.DefaultTransport
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig:       tlsConfig,
+	}
+
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// checkDestination asks a ping-config profile's destination through the
+// node, within the profile's timeout. On the address of url it goes over
+// the test's own connection when that still carries a request, else over
+// a new one.
+func (p *Proxy) checkDestination(ctx context.Context, profile *pingconfig.Profile, url string, client *http.Client, tlsConfig *mtls.Config) error {
+	ctx, cancel := context.WithTimeout(ctx, profile.Timeout)
+	defer cancel()
+
+	if sameAddress(url, profile.Destination) {
+		answered, err := askDestination(ctx, client, profile)
+		if answered || err == nil || ctx.Err() != nil {
+			return err
+		}
+		// the connection did not carry another request: a new one
+	}
+
+	addr, err := urlToMetadata(profile.Destination)
+	if err != nil {
+		return err
+	}
+	instance, err := p.DialContext(ctx, &addr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = instance.Close()
+	}()
+	fresh := probeClient(instance, tlsConfig)
+	defer fresh.CloseIdleConnections()
+	_, err = askDestination(ctx, fresh, profile)
+	return err
+}
+
+// askDestination makes the profile's request. answered is true once a
+// response came, so a failure after it is the node's, not the connection's.
+func askDestination(ctx context.Context, client *http.Client, profile *pingconfig.Profile) (answered bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, profile.Method, profile.Destination, nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return true, fmt.Errorf("destination answered %d", resp.StatusCode)
+	}
+	if profile.Method == http.MethodGet {
+		n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, pingconfig.MaxBody))
+		if err != nil {
+			return true, fmt.Errorf("destination body after %d bytes: %w", n, err)
+		}
+		profile.NoteBody(n)
+	}
+	return true, nil
+}
+
+// sameAddress says whether two urls reach the same scheme, host and port.
+func sameAddress(a, b string) bool {
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return ua.Scheme == ub.Scheme && strings.EqualFold(ua.Hostname(), ub.Hostname()) && portOf(ua) == portOf(ub)
+}
+
+func portOf(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+// directProbe asks rawURL DIRECT, past every proxy: whether the device
+// itself is online.
+func directProbe(rawURL string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	addr, err := urlToMetadata(rawURL)
+	if err != nil {
+		return err
+	}
+	instance, err := outbound.NewDirect().DialContext(ctx, &addr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = instance.Close()
+	}()
+	tlsConfig, err := ca.GetTLSConfig(ca.Option{})
+	if err != nil {
+		return err
+	}
+	client := probeClient(instance, tlsConfig)
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
 }
 
 func NewProxy(adapter C.ProxyAdapter) *Proxy {

@@ -262,7 +262,7 @@ func (lb *LoadBalance) MarshalJSON() ([]byte, error) {
 	for _, proxy := range lb.GetProxies(false) {
 		all = append(all, proxy.Name())
 	}
-	return json.Marshal(map[string]any{
+	return json.Marshal(withPingConfig(map[string]any{
 		"type":           lb.Type().String(),
 		"all":            all,
 		"testUrl":        lb.testUrl,
@@ -270,7 +270,7 @@ func (lb *LoadBalance) MarshalJSON() ([]byte, error) {
 		"hidden":         lb.Hidden(),
 		"icon":           lb.Icon(),
 		"emptyFallback":  lb.EmptyFallback().Name(),
-	})
+	}, lb.testUrl))
 }
 
 func (lb *LoadBalance) Providers() []P.ProxyProvider {
