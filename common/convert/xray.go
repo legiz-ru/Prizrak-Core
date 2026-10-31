@@ -525,6 +525,19 @@ func xrayTransport(proxy, stream map[string]any, protocol string) error {
 		}
 		proxy["network"] = "xhttp"
 		proxy["xhttp-opts"] = xhttpOpts
+	case "kcp", "mkcp":
+		if protocol != "vless" && protocol != "vmess" {
+			return fmt.Errorf("%s over mkcp is not supported", protocol)
+		}
+		kcp, _ := stream["kcpSettings"].(map[string]any)
+		opts, err := mkcpOpts(kcp, protocol)
+		if err != nil {
+			return err
+		}
+		proxy["network"] = "mkcp"
+		if len(opts) > 0 {
+			proxy["mkcp-opts"] = opts
+		}
 	default:
 		return fmt.Errorf("unsupported network %s", network)
 	}

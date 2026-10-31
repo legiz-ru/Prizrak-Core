@@ -182,6 +182,22 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 		}
 
 		proxy["xhttp-opts"] = xhttpOpts
+
+	case "kcp", "mkcp":
+		kcp := map[string]any{}
+		for _, key := range []string{"mtu", "tti", "uplinkCapacity", "downlinkCapacity", "readBufferSize", "writeBufferSize", "congestion", "headerType", "seed"} {
+			if value := query.Get(key); value != "" {
+				kcp[key] = value
+			}
+		}
+		opts, err := mkcpOpts(kcp, scheme)
+		if err != nil {
+			return err
+		}
+		proxy["network"] = "mkcp"
+		if len(opts) > 0 {
+			proxy["mkcp-opts"] = opts
+		}
 	}
 
 	applyFinalMask(proxy, query)

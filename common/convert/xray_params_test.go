@@ -52,6 +52,27 @@ func TestConvertsV2RayVlessXHTTPH3KeepsUDPMasks(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// VLESS over mKCP through an xdns tunnel, as the Remnawave backend links it:
+// type=kcp with mtu and tti, the first xdns in fm.
+func TestConvertsV2RayVlessMKCPXDNS(t *testing.T) {
+	fm := `{"udp":[{"type":"xdns","settings":{"resolvers":["t.example.com:aaaa+udp://77.88.8.8:53","t.example.com:aaaa+udp://8.8.8.8:53"]}}]}`
+	link := "vless://b831381d-6324-4d53-ad4f-8cda48b30811@77.88.8.8:53?encryption=none&type=kcp&mtu=77&tti=100&security=none&fm=" + url.QueryEscape(fm) + "#dns"
+	proxies, err := ConvertsV2Ray([]byte(link))
+	require.NoError(t, err)
+	require.Len(t, proxies, 1)
+	p := proxies[0]
+	assert.Equal(t, "mkcp", p["network"])
+	assert.Equal(t, map[string]any{"mtu": 77, "tti": 100}, p["mkcp-opts"])
+	assert.Len(t, p["finalmask"].(map[string]any)["udp"], 1)
+	_, err = adapter.ParseProxy(p)
+	require.NoError(t, err)
+
+	// The mKCP before finalmask: header and seed have no place in VLESS.
+	proxies, err = ConvertsV2Ray([]byte("vless://b831381d-6324-4d53-ad4f-8cda48b30811@example.com:443?type=kcp&headerType=wechat-video&seed=s#old"))
+	assert.Error(t, err)
+	assert.Empty(t, proxies)
+}
+
 func TestConvertsV2RayVlessTLSExtras(t *testing.T) {
 	link := "vless://b831381d-6324-4d53-ad4f-8cda48b30811@example.com:443?encryption=none&type=xhttp&path=%2Fx&host=cdn.example.com&mode=packet-up&x_padding_bytes=100-1000&extra=" + url.QueryEscape(`{"uplinkHttpMethod":"GET","xPaddingBytes":"200-300"}`) + "&security=tls&sni=example.com&fp=firefox&alpn=h2&pcs=ab%3Acd&vcn=real.example.com#x"
 	proxies, err := ConvertsV2Ray([]byte(link))

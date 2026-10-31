@@ -49,9 +49,13 @@ const remnawaveXrayJSON = `[
 {"remarks":"VMess","outbounds":[
  {"tag":"proxy","protocol":"vmess","settings":{"vnext":[{"address":"vm.example.com","port":443,"users":[{"id":"b831381d-6324-4d53-ad4f-8cda48b30811","alterId":0,"security":"auto"}]}]},
   "streamSettings":{"network":"ws","wsSettings":{"path":"/vm"},"security":"tls","tlsSettings":{"serverName":"vm.example.com"}}}]},
-{"remarks":"KCP unsupported","outbounds":[
+{"remarks":"KCP xdns","outbounds":[
+ {"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"77.88.8.8","port":53,"users":[{"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"none","flow":""}]}]},
+  "streamSettings":{"network":"kcp","kcpSettings":{"mtu":77,"tti":100,"congestion":false},"security":"none",
+   "finalmask":{"udp":[{"type":"xdns","settings":{"resolvers":["t.example.com:aaaa+udp://77.88.8.8:53","t.example.com:aaaa+udp://8.8.8.8:53"]}}]}}}]},
+{"remarks":"KCP seed unsupported","outbounds":[
  {"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"kcp.example.com","port":443,"users":[{"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"none"}]}]},
-  "streamSettings":{"network":"kcp","kcpSettings":{"mtu":1350,"tti":50,"congestion":false},"security":"none"}}]}
+  "streamSettings":{"network":"kcp","kcpSettings":{"mtu":1350,"tti":50,"congestion":false,"seed":"old"},"security":"none"}}]}
 ]`
 
 func TestConvertsXrayJSONRemnawave(t *testing.T) {
@@ -63,8 +67,16 @@ func TestConvertsXrayJSONRemnawave(t *testing.T) {
 		_, err := adapter.ParseProxy(p)
 		require.NoError(t, err, p["name"])
 	}
-	assert.Len(t, proxies, 9)
-	assert.NotContains(t, byName, "KCP unsupported")
+	assert.Len(t, proxies, 10)
+	assert.NotContains(t, byName, "KCP seed unsupported")
+
+	kcp := byName["KCP xdns"]
+	assert.Equal(t, "vless", kcp["type"])
+	assert.Equal(t, "mkcp", kcp["network"])
+	assert.Equal(t, map[string]any{"mtu": 77, "tti": 100}, kcp["mkcp-opts"])
+	assert.Equal(t, map[string]any{"udp": []any{map[string]any{"type": "xdns", "settings": map[string]any{"resolvers": []any{
+		"t.example.com:aaaa+udp://77.88.8.8:53", "t.example.com:aaaa+udp://8.8.8.8:53",
+	}}}}}, kcp["finalmask"])
 
 	nl := byName["Нидерланды 🇳🇱"]
 	assert.Equal(t, "vless", nl["type"])

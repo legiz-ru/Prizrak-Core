@@ -62,7 +62,7 @@ func finalMaskBlock(fm map[string]any, proxy map[string]any) map[string]any {
 		if finalMaskUDPUsable(proxy) {
 			block["udp"] = list
 		} else {
-			log.Debugln("finalmask.udp of %v dropped: it is for vless over xhttp with alpn h3 only", proxy["name"])
+			log.Debugln("finalmask.udp of %v dropped: it is for vless over mkcp and over xhttp with alpn h3 only", proxy["name"])
 		}
 	}
 	if len(block) == 0 {
@@ -72,6 +72,9 @@ func finalMaskBlock(fm map[string]any, proxy map[string]any) map[string]any {
 }
 
 func finalMaskUDPUsable(proxy map[string]any) bool {
+	if proxy["type"] == "vless" && proxy["network"] == "mkcp" {
+		return true
+	}
 	if proxy["type"] != "vless" || proxy["network"] != "xhttp" {
 		return false
 	}
@@ -314,4 +317,55 @@ func xrayBandwidth(v any) string {
 		return fmt.Sprintf("%d Mbps", whole/1_000_000)
 	}
 	return fmt.Sprintf("%d bps", whole)
+}
+
+// mkcpOpts maps the mKCP settings of an Xray config (kcpSettings) or of a
+// share link (type=kcp&mtu=...&tti=...) to mkcp-opts. VLESS speaks the
+// framing of Xray-core since finalmask, which dropped header and seed (they
+// are finalmask masks now), so a VLESS node that still sets them is
+// refused; VMess's mKCP keeps them.
+func mkcpOpts(kcp map[string]any, protocol string) (map[string]any, error) {
+	opts := map[string]any{}
+	for _, f := range [][2]string{{"mtu", "mtu"}, {"tti", "tti"}, {"uplinkCapacity", "uplink-capacity"}, {"downlinkCapacity", "downlink-capacity"}} {
+		if n := mapInt(kcp, f[0]); n > 0 {
+			opts[f[1]] = n
+		}
+	}
+	// Xray counts the buffers in MB.
+	for _, f := range [][2]string{{"readBufferSize", "read-buffer"}, {"writeBufferSize", "write-buffer"}} {
+		if n := mapInt(kcp, f[0]); n > 0 {
+			opts[f[1]] = n * 1024 * 1024
+		}
+	}
+	switch v := kcp["congestion"].(type) {
+	case bool:
+		if v {
+			opts["congestion"] = true
+		}
+	case string:
+		if enabled, err := strconv.ParseBool(v); err == nil && enabled {
+			opts["congestion"] = true
+		}
+	}
+	header := mapString(kcp, "headerType")
+	if h, ok := kcp["header"].(map[string]any); ok {
+		header = mapString(h, "type")
+	}
+	if strings.EqualFold(header, "none") {
+		header = ""
+	}
+	seed := mapString(kcp, "seed")
+	if protocol == "vless" {
+		if header != "" || seed != "" {
+			return nil, fmt.Errorf("vless over mkcp with header %q or a seed is the mKCP before finalmask, not supported", header)
+		}
+		return opts, nil
+	}
+	if header != "" {
+		opts["header"] = header
+	}
+	if seed != "" {
+		opts["seed"] = seed
+	}
+	return opts, nil
 }
