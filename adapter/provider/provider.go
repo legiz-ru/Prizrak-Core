@@ -42,6 +42,7 @@ type providerForApi struct {
 	ExpectedStatus   string            `json:"expectedStatus"`
 	UpdatedAt        time.Time         `json:"updatedAt,omitempty"`
 	SubscriptionInfo *SubscriptionInfo `json:"subscriptionInfo,omitempty"`
+	LastUrl          string            `json:"lastUrl,omitempty"`
 }
 
 type baseProvider struct {
@@ -138,6 +139,7 @@ func (pp *proxySetProvider) MarshalJSON() ([]byte, error) {
 		ExpectedStatus:   pp.healthCheck.expectedStatus.String(),
 		UpdatedAt:        pp.UpdatedAt(),
 		SubscriptionInfo: pp.subscriptionInfo,
+		LastUrl:          resource.LastURL(pp.Vehicle()),
 	})
 }
 

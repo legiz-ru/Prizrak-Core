@@ -41,6 +41,7 @@ type providerForApi struct {
 	VehicleType string    `json:"vehicleType"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 	Payload     []string  `json:"payload,omitempty"`
+	LastUrl     string    `json:"lastUrl,omitempty"`
 }
 
 type ruleStrategy interface {
@@ -114,6 +115,7 @@ func (rp *ruleSetProvider) MarshalJSON() ([]byte, error) {
 			Type:        rp.Type().String(),
 			UpdatedAt:   rp.UpdatedAt(),
 			VehicleType: rp.VehicleType().String(),
+			LastUrl:     resource.LastURL(rp.Vehicle()),
 		})
 }
 

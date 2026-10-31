@@ -38,6 +38,7 @@ type proxyProviderSchema struct {
 	SizeLimit     int64            `provider:"size-limit,omitempty"`
 	Payload       []map[string]any `provider:"payload,omitempty"`
 	AgeSecretKey  string           `provider:"age-secret-key,omitempty"`
+	FallbackURLs  []string         `provider:"fallback-urls,omitempty"`
 
 	HealthCheck healthCheckSchema   `provider:"health-check,omitempty"`
 	Override    overrideSchema      `provider:"override,omitempty"`
@@ -91,7 +92,15 @@ func ParseProxyProvider(name string, mapping map[string]any, tunnel C.Tunnel) (P
 				return nil, C.Path.ErrNotSafePath(path)
 			}
 		}
-		vehicle = resource.NewHTTPVehicle(schema.URL, path, schema.Proxy, schema.Header, resource.DefaultHttpTimeout, schema.SizeLimit)
+		fallbackURLs, err := resource.ParseFallbackURLs(schema.URL, schema.FallbackURLs)
+		if err != nil {
+			return nil, err
+		}
+		var options []resource.HTTPVehicleOption
+		if len(fallbackURLs) > 0 {
+			options = append(options, resource.WithFallbackURLs(name, fallbackURLs))
+		}
+		vehicle = resource.NewHTTPVehicle(schema.URL, path, schema.Proxy, schema.Header, resource.DefaultHttpTimeout, schema.SizeLimit, options...)
 	case "inline":
 		return NewInlineProvider(name, schema.Payload, parser, hc)
 	default:

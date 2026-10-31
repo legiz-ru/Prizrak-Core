@@ -23,6 +23,7 @@ type ruleProviderSchema struct {
 	Payload      []string            `provider:"payload,omitempty"`
 	Header       map[string][]string `provider:"header,omitempty"`
 	PathInBundle string              `provider:"path-in-bundle,omitempty"`
+	FallbackURLs []string            `provider:"fallback-urls,omitempty"`
 }
 
 func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRuleFunc, makeBundleFile func(pathInBundle string) resource.BundleFile) (P.RuleProvider, error) {
@@ -56,7 +57,15 @@ func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRu
 				return nil, C.Path.ErrNotSafePath(path)
 			}
 		}
-		vehicle = resource.NewHTTPVehicle(schema.URL, path, schema.Proxy, schema.Header, resource.DefaultHttpTimeout, schema.SizeLimit)
+		fallbackURLs, err := resource.ParseFallbackURLs(schema.URL, schema.FallbackURLs)
+		if err != nil {
+			return nil, err
+		}
+		var options []resource.HTTPVehicleOption
+		if len(fallbackURLs) > 0 {
+			options = append(options, resource.WithFallbackURLs(name, fallbackURLs))
+		}
+		vehicle = resource.NewHTTPVehicle(schema.URL, path, schema.Proxy, schema.Header, resource.DefaultHttpTimeout, schema.SizeLimit, options...)
 	case "inline":
 		return NewInlineProvider(name, behavior, schema.Payload, parse), nil
 	default:

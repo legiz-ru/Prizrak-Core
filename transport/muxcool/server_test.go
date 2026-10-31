@@ -111,7 +111,10 @@ func serveTestCarrierContext(t *testing.T, ctx context.Context, runtime *ServerR
 		_ = client.Close()
 		select {
 		case err := <-done:
-			if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			// Closing the client is a clean stop however Serve sees it:
+			// EOF on its read, or its own end already closed by a write
+			// that failed first (io.ErrClosedPipe).
+			if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
 				t.Errorf("Serve: %v", err)
 			}
 		case <-time.After(time.Second):

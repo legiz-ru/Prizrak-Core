@@ -2031,6 +2031,8 @@ proxy-providers:
   provider1:
     type: http # http 的 path 可空置，默认储存路径为 homedir 的 proxies 文件夹，文件名为 url 的 md5
     url: "url"
+    # fallback-urls: # tried in order when url does not answer (an error, a status other than 2xx/304, a broken body); each attempt has a timeout of its own, the ETag is kept per address
+    #   - "https://mirror.example.com/sub"
     interval: 3600
     path: ./provider1.yaml # 默认只允许存储在 mihomo 的 Home Dir，如果想存储到其他位置，请通过设置 SAFE_PATHS 环境变量指定额外的安全路径。该环境变量的语法同本操作系统的PATH环境变量解析规则（即Windows下以分号分割，其他系统下以冒号分割）
     proxy: DIRECT
@@ -2159,6 +2161,8 @@ rule-providers:
     path: /path/to/save/file.yaml # 默认只允许存储在 mihomo 的 Home Dir，如果想存储到其他位置，请通过设置 SAFE_PATHS 环境变量指定额外的安全路径。该环境变量的语法同本操作系统的PATH环境变量解析规则（即Windows下以分号分割，其他系统下以冒号分割）
     type: http # http 的 path 可空置，默认储存路径为 homedir 的 rules 文件夹，文件名为 url 的 md5
     url: "url"
+    # fallback-urls: # tried in order when url does not answer; a 304 from url keeps the rules and asks no mirror
+    #   - "https://cdn.jsdelivr.net/gh/example/rules/file.yaml"
     proxy: DIRECT
     # size-limit: 10240 # 限制下载文件最大为10kb，默认为0即不限制文件大小
   rule2:
