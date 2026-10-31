@@ -6,86 +6,59 @@ import (
 	"strings"
 )
 
-// compactEDNS0 is the EDNS0 payload the first xdns client advertised on
-// every query. A compact entry has no field for it, so it keeps that size.
-const compactEDNS0 = 4096
-
-// ExpandCompact rewrites the compact spellings of the first Xray-core xdns
-// (before its "Refactor and new parameters" change, which this package
-// follows) into the structured settings: a `resolvers` entry
-// "<domain>[:<method>]+udp://<server>" names the zone, the record type and
-// one resolver; a `domains` entry "<domain>[:<method>]" names a zone. The
-// method is txt (the default of a resolver entry), a or aaaa; a domain
-// entry without a method keeps every type. Structured entries stay as they
-// are, so the two spellings may be mixed.
-func ExpandCompact(settings map[string]any) error {
+// ParseCompact reads the settings of the first Xray-core xdns: a `resolvers`
+// entry "<domain>[:<method>]+udp://<server>" names the zone, the record
+// type (txt by default, a, aaaa) and one resolver; a `domains` entry
+// "<domain>[:<method>]" names a server zone. That xdns has its own framing
+// on the wire (see LegacyConfig), so a config in this spelling gets the
+// client of that time; ok is false when the settings are not written so.
+// The two spellings are different protocols and do not mix.
+func ParseCompact(settings map[string]any) (_ *LegacyConfig, ok bool, err error) {
 	domains, _ := settings["domains"].([]any)
 	resolvers, _ := settings["resolvers"].([]any)
-	zones := compactZones{}
-	outDomains := make([]any, 0, len(domains))
-	for _, entry := range domains {
-		spec, ok := entry.(string)
-		if !ok {
-			outDomains = append(outDomains, entry)
-			continue
+	compact, structured := 0, 0
+	for _, entry := range append(append([]any{}, domains...), resolvers...) {
+		if _, isString := entry.(string); isString {
+			compact++
+		} else {
+			structured++
 		}
-		name, rrType, err := parseCompactDomain(spec, "")
-		if err != nil {
-			return fmt.Errorf("xdns: domain %q: %w", spec, err)
-		}
-		zones.add(name, rrType)
 	}
-	outResolvers := make([]any, 0, len(resolvers))
-	for _, entry := range resolvers {
-		spec, ok := entry.(string)
-		if !ok {
-			outResolvers = append(outResolvers, entry)
-			continue
+	if compact == 0 {
+		return nil, false, nil
+	}
+	if structured > 0 {
+		return nil, true, errors.New("xdns: the compact spelling (\"t.example.com:aaaa+udp://1.1.1.1:53\") is the first xdns, whose wire format the structured {names}/{addrs} entries of the current xdns do not speak; write all entries one way")
+	}
+	for key := range settings {
+		switch key {
+		case "domains", "resolvers":
+		default:
+			return nil, true, fmt.Errorf("xdns: %s belongs to the current xdns, the compact spelling of the first one has only domains and resolvers", key)
 		}
+	}
+	c := &LegacyConfig{}
+	for _, entry := range domains {
+		spec := entry.(string)
+		name, _, err := parseCompactDomain(spec, "")
+		if err != nil {
+			return nil, true, fmt.Errorf("xdns: domain %q: %w", spec, err)
+		}
+		c.Domains = append(c.Domains, name)
+	}
+	for _, entry := range resolvers {
+		spec := entry.(string)
 		name, rrType, server, err := parseCompactResolver(spec)
 		if err != nil {
-			return fmt.Errorf("xdns: resolver %q: %w", spec, err)
+			return nil, true, fmt.Errorf("xdns: resolver %q: %w", spec, err)
 		}
-		zones.add(name, rrType)
-		outResolvers = append(outResolvers, map[string]any{"addrs": []any{server}})
+		resolver, err := ParseResolver(server)
+		if err != nil {
+			return nil, true, err
+		}
+		c.Resolvers = append(c.Resolvers, LegacyResolver{Zone: name, Type: rrType, Resolver: resolver})
 	}
-	if len(zones.order) == 0 && len(outDomains) == len(domains) && len(outResolvers) == len(resolvers) {
-		return nil
-	}
-	settings["domains"] = append(outDomains, zones.entries()...)
-	settings["resolvers"] = outResolvers
-	return nil
-}
-
-// compactZones collects the zones the compact entries name, one entry per
-// distinct name and record type, in the order they first appeared.
-type compactZones struct {
-	order []string
-	seen  map[string]map[string]any
-}
-
-func (z *compactZones) add(name string, rrType uint16) {
-	key := fmt.Sprintf("%s/%d", name, rrType)
-	if z.seen == nil {
-		z.seen = map[string]map[string]any{}
-	}
-	if _, ok := z.seen[key]; ok {
-		return
-	}
-	entry := map[string]any{"names": []any{name}, "edns0": int64(compactEDNS0)}
-	if rrType != 0 {
-		entry["types"] = []any{int64(rrType)}
-	}
-	z.seen[key] = entry
-	z.order = append(z.order, key)
-}
-
-func (z *compactZones) entries() []any {
-	out := make([]any, 0, len(z.order))
-	for _, key := range z.order {
-		out = append(out, z.seen[key])
-	}
-	return out
+	return c, true, nil
 }
 
 // rrTypeFromMethod reads the method of a compact entry: txt (also the

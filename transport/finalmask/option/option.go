@@ -196,10 +196,13 @@ func BuildUDPMask(entry map[string]any) (finalmask.UDPMask, error) {
 		return udphop.New(o)
 	case "xdns":
 		// The first Xray xdns spelled a resolver as
-		// "<domain>[:<method>]+udp://<server>"; those entries are expanded
-		// into the structured `domains`/`resolvers` before decoding.
-		if err := xdns.ExpandCompact(settings); err != nil {
-			return nil, err
+		// "<domain>[:<method>]+udp://<server>" and had its own framing on
+		// the wire; settings written so get that client.
+		if legacy, ok, err := xdns.ParseCompact(settings); ok || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			return legacy, nil
 		}
 		var o xdns.Option
 		if err := decodeMask(settings, &o); err != nil {

@@ -1260,8 +1260,9 @@ proxies: # socks5
         #       # label-limit: 63
         #   resolvers:
         #     - addrs: ["udp://1.1.1.1", "tcp://8.8.8.8:53"]  # 不写协议为 udp，不写端口为 53 / udp and port 53 by default
-        #   # 也接受早期 Xray xdns 的紧凑写法：一行同时给出区域、记录类型与解析器，edns0 取 4096
-        #   # the compact spelling of the first Xray xdns is accepted too: zone, record type and resolver in one string, edns0 4096
+        #   # 早期 Xray xdns (v26.1.31 至 v26.9.9) 的紧凑写法：一行给出区域、记录类型与解析器；其线上格式与新版不同，按此写法即使用旧格式客户端，两种写法不可混用
+        #   # the compact spelling of the first Xray xdns (v26.1.31 to v26.9.9): zone, record type and resolver in one string; its wire format differs from the
+        #   # current one, so this spelling gets the client of that time, for servers of that time; the two spellings do not mix (client side only)
         #   # resolvers: ["t.example.com:aaaa+udp://1.1.1.1:53", "t.example.com:aaaa+udp://8.8.8.8:53"]   # method: txt (default), a, aaaa
         #   # extra-poll: 0        # 每次发送后额外轮询次数 0-3 / extra polls after every write, 0 to 3
         # xicmp: 数据报以 ICMP echo 承载；需要 raw 套接字或 dgram 模式的非特权 ICMP 套接字 / datagrams as ICMP echoes; raw sockets, or dgram with unprivileged ICMP sockets
