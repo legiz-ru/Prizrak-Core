@@ -44,9 +44,32 @@ func TestParseRuleProviderFallbackURLs(t *testing.T) {
 	assert.Contains(t, string(body), `"lastUrl":"`+backup.URL+`/ru.yaml"`)
 }
 
+// A single fallback address may be written as a plain string.
+func TestParseRuleProviderFallbackURLAsString(t *testing.T) {
+	C.SetHomeDir(t.TempDir())
+	main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }))
+	defer main.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("payload:\n  - '+.example.com'\n"))
+	}))
+	defer backup.Close()
+
+	p, err := ParseRuleProvider("ru-sites", map[string]any{
+		"type":          "http",
+		"behavior":      "domain",
+		"url":           main.URL + "/ru.yaml",
+		"fallback-urls": backup.URL + "/ru.yaml",
+		"path":          "./rule-sets/ru-sites.yaml",
+	}, nil, noBundle)
+	require.NoError(t, err)
+	defer p.(*RuleSetProvider).Close()
+	require.NoError(t, p.Initial())
+	assert.Equal(t, 1, p.Count())
+}
+
 func TestParseRuleProviderBadFallbackURL(t *testing.T) {
 	C.SetHomeDir(t.TempDir())
-	for _, urls := range []any{[]any{"ftp://mirror.example/ru.mrs"}, []any{"mirror.example/ru.mrs"}, []any{map[string]any{"url": "https://mirror.example"}}} {
+	for _, urls := range []any{[]any{"ftp://mirror.example/ru.mrs"}, []any{"mirror.example/ru.mrs"}, []any{map[string]any{"url": "https://mirror.example"}}, "ftp://mirror.example/ru.mrs", map[string]any{"url": "https://mirror.example"}} {
 		_, err := ParseRuleProvider("ru-sites", map[string]any{
 			"type":          "http",
 			"behavior":      "domain",

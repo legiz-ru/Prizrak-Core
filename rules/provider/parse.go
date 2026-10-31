@@ -12,18 +12,18 @@ import (
 )
 
 type ruleProviderSchema struct {
-	Type         string              `provider:"type"`
-	Behavior     string              `provider:"behavior"`
-	Path         string              `provider:"path,omitempty"`
-	URL          string              `provider:"url,omitempty"`
-	Proxy        string              `provider:"proxy,omitempty"`
-	Format       string              `provider:"format,omitempty"`
-	Interval     int                 `provider:"interval,omitempty"`
-	SizeLimit    int64               `provider:"size-limit,omitempty"`
-	Payload      []string            `provider:"payload,omitempty"`
-	Header       map[string][]string `provider:"header,omitempty"`
-	PathInBundle string              `provider:"path-in-bundle,omitempty"`
-	FallbackURLs []string            `provider:"fallback-urls,omitempty"`
+	Type         string                `provider:"type"`
+	Behavior     string                `provider:"behavior"`
+	Path         string                `provider:"path,omitempty"`
+	URL          string                `provider:"url,omitempty"`
+	Proxy        string                `provider:"proxy,omitempty"`
+	Format       string                `provider:"format,omitempty"`
+	Interval     int                   `provider:"interval,omitempty"`
+	SizeLimit    int64                 `provider:"size-limit,omitempty"`
+	Payload      []string              `provider:"payload,omitempty"`
+	Header       map[string][]string   `provider:"header,omitempty"`
+	PathInBundle string                `provider:"path-in-bundle,omitempty"`
+	FallbackURLs resource.FallbackURLs `provider:"fallback-urls,omitempty"`
 }
 
 func ParseRuleProvider(name string, mapping map[string]any, parse common.ParseRuleFunc, makeBundleFile func(pathInBundle string) resource.BundleFile) (P.RuleProvider, error) {

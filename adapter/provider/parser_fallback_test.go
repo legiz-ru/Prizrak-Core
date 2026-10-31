@@ -14,6 +14,13 @@ import (
 // A proxy-provider with fallback-urls reads the subscription, and its
 // subscription-userinfo, from the first address that answers.
 func TestParseProxyProviderFallbackURLs(t *testing.T) {
+	// A single fallback address may also be written as a plain string.
+	for _, form := range []string{"list", "string"} {
+		t.Run(form, func(t *testing.T) { testParseProxyProviderFallbackURLs(t, form == "string") })
+	}
+}
+
+func testParseProxyProviderFallbackURLs(t *testing.T, asString bool) {
 	C.SetHomeDir(t.TempDir())
 	main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("subscription-userinfo", "upload=1; download=1; total=1; expire=1")
@@ -26,10 +33,14 @@ func TestParseProxyProviderFallbackURLs(t *testing.T) {
 	}))
 	defer backup.Close()
 
+	var fallbackURLs any = []any{backup.URL + "/sub?token=x"}
+	if asString {
+		fallbackURLs = backup.URL + "/sub?token=x"
+	}
 	p, err := ParseProxyProvider("sub", map[string]any{
 		"type":          "http",
 		"url":           main.URL + "/sub?token=x",
-		"fallback-urls": []any{backup.URL + "/sub?token=x"},
+		"fallback-urls": fallbackURLs,
 		"path":          "./proxies/sub.yaml",
 	}, nil)
 	require.NoError(t, err)

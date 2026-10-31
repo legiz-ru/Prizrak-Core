@@ -118,6 +118,15 @@ func WithFallbackURLs(provider string, urls []string) HTTPVehicleOption {
 	}
 }
 
+// FallbackURLs is the fallback-urls field of a provider: a list of
+// addresses, or a single address written as a plain string.
+type FallbackURLs []string
+
+func (f *FallbackURLs) UnmarshalText(text []byte) error {
+	*f = FallbackURLs{string(text)}
+	return nil
+}
+
 // ParseFallbackURLs checks the fallback-urls of a provider: http and
 // https only, with empty entries skipped and repeats of the main url and
 // of each other dropped.

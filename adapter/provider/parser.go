@@ -26,19 +26,19 @@ type healthCheckSchema struct {
 }
 
 type proxyProviderSchema struct {
-	Type          string           `provider:"type"`
-	Path          string           `provider:"path,omitempty"`
-	URL           string           `provider:"url,omitempty"`
-	Proxy         string           `provider:"proxy,omitempty"`
-	Interval      int              `provider:"interval,omitempty"`
-	Filter        string           `provider:"filter,omitempty"`
-	ExcludeFilter string           `provider:"exclude-filter,omitempty"`
-	ExcludeType   string           `provider:"exclude-type,omitempty"`
-	DialerProxy   string           `provider:"dialer-proxy,omitempty"`
-	SizeLimit     int64            `provider:"size-limit,omitempty"`
-	Payload       []map[string]any `provider:"payload,omitempty"`
-	AgeSecretKey  string           `provider:"age-secret-key,omitempty"`
-	FallbackURLs  []string         `provider:"fallback-urls,omitempty"`
+	Type          string                `provider:"type"`
+	Path          string                `provider:"path,omitempty"`
+	URL           string                `provider:"url,omitempty"`
+	Proxy         string                `provider:"proxy,omitempty"`
+	Interval      int                   `provider:"interval,omitempty"`
+	Filter        string                `provider:"filter,omitempty"`
+	ExcludeFilter string                `provider:"exclude-filter,omitempty"`
+	ExcludeType   string                `provider:"exclude-type,omitempty"`
+	DialerProxy   string                `provider:"dialer-proxy,omitempty"`
+	SizeLimit     int64                 `provider:"size-limit,omitempty"`
+	Payload       []map[string]any      `provider:"payload,omitempty"`
+	AgeSecretKey  string                `provider:"age-secret-key,omitempty"`
+	FallbackURLs  resource.FallbackURLs `provider:"fallback-urls,omitempty"`
 
 	HealthCheck healthCheckSchema   `provider:"health-check,omitempty"`
 	Override    overrideSchema      `provider:"override,omitempty"`
