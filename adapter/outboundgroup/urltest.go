@@ -167,7 +167,7 @@ func (u *URLTest) MarshalJSON() ([]byte, error) {
 	for _, proxy := range u.GetProxies(false) {
 		all = append(all, proxy.Name())
 	}
-	return json.Marshal(map[string]any{
+	return json.Marshal(withPingConfig(map[string]any{
 		"type":           u.Type().String(),
 		"now":            u.Now(),
 		"all":            all,
@@ -177,7 +177,7 @@ func (u *URLTest) MarshalJSON() ([]byte, error) {
 		"hidden":         u.Hidden(),
 		"icon":           u.Icon(),
 		"emptyFallback":  u.EmptyFallback().Name(),
-	})
+	}, u.testUrl))
 }
 
 func (u *URLTest) Providers() []P.ProxyProvider {

@@ -65,7 +65,7 @@ func (s *Selector) MarshalJSON() ([]byte, error) {
 		url = s.testUrl
 	}
 
-	return json.Marshal(map[string]any{
+	return json.Marshal(withPingConfig(map[string]any{
 		"type":          s.Type().String(),
 		"now":           s.Now(),
 		"all":           all,
@@ -73,7 +73,7 @@ func (s *Selector) MarshalJSON() ([]byte, error) {
 		"hidden":        s.Hidden(),
 		"icon":          s.Icon(),
 		"emptyFallback": s.EmptyFallback().Name(),
-	})
+	}, s.testUrl))
 }
 
 func (s *Selector) Now() string {

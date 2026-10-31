@@ -10,6 +10,7 @@ import (
 	"github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/common/structure"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/pingconfig"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -43,6 +44,8 @@ type GroupCommonOption struct {
 	IncludeAllProviders bool     `group:"include-all-providers,omitempty"`
 	Hidden              bool     `group:"hidden,omitempty"`
 	Icon                string   `group:"icon,omitempty"`
+
+	PingConfig map[string]any `group:"ping-config,omitempty"`
 }
 
 func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, providersMap map[string]P.ProxyProvider, AllProxies []string, AllProviders []string) (ProxyGroup, error) {
@@ -129,6 +132,9 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 	}
 	groupOption.ExpectedStatus = status
 
+	// select and relay make no background checks, with ping-config or not
+	scheduled := groupOption.Type != "select" && groupOption.Type != "relay"
+
 	if len(groupOption.Use) != 0 {
 		PDs, err := getProviders(providersMap, groupOption.Use)
 		if err != nil {
@@ -146,8 +152,16 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 			if groupOption.URL == "" {
 				groupOption.URL = C.DefaultTestURL
 			}
+			if groupOption.PingConfig != nil && scheduled && groupOption.URL == C.DefaultTestURL {
+				// no provider checks this url: the profile's loop needs a task
+				addTestUrlToProviders(PDs, groupOption.URL, expectedStatus, groupOption.Filter, pingInterval(groupOption))
+			}
 		} else {
-			addTestUrlToProviders(PDs, groupOption.URL, expectedStatus, groupOption.Filter, uint(groupOption.Interval))
+			interval := uint(groupOption.Interval)
+			if groupOption.PingConfig != nil && scheduled && interval == 0 {
+				interval = pingInterval(groupOption)
+			}
+			addTestUrlToProviders(PDs, groupOption.URL, expectedStatus, groupOption.Filter, interval)
 		}
 		providers = append(providers, PDs...)
 	}
@@ -167,7 +181,7 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 		}
 
 		// select don't need auto health check
-		if groupOption.Type != "select" && groupOption.Type != "relay" {
+		if scheduled {
 			if groupOption.Interval == 0 {
 				groupOption.Interval = 300
 			}
@@ -184,6 +198,20 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 		providersMap[groupName] = pd
 	}
 
+	var profile *pingconfig.Profile
+	if groupOption.PingConfig != nil {
+		profile, err = pingconfig.Parse(groupOption.PingConfig, pingconfig.Defaults{
+			Group:    groupName,
+			URL:      groupOption.URL,
+			Interval: groupOption.Interval,
+			Timeout:  groupOption.TestTimeout,
+		}, log.Warnln)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", groupName, err)
+		}
+	}
+
+	var group ProxyGroup
 	switch groupOption.Type {
 	case "url-test":
 		opt := URLTestOption{}
@@ -191,28 +219,28 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 		if err != nil {
 			return nil, err
 		}
-		return NewURLTest(groupOption, opt, emptyFallback, providers)
+		group, err = NewURLTest(groupOption, opt, emptyFallback, providers)
 	case "select":
 		opt := SelectorOption{}
 		err = decoder.Decode(config, &opt)
 		if err != nil {
 			return nil, err
 		}
-		return NewSelector(groupOption, opt, emptyFallback, providers)
+		group, err = NewSelector(groupOption, opt, emptyFallback, providers)
 	case "fallback":
 		opt := FallbackOption{}
 		err = decoder.Decode(config, &opt)
 		if err != nil {
 			return nil, err
 		}
-		return NewFallback(groupOption, opt, emptyFallback, providers)
+		group, err = NewFallback(groupOption, opt, emptyFallback, providers)
 	case "load-balance":
 		opt := LoadBalanceOption{}
 		err = decoder.Decode(config, &opt)
 		if err != nil {
 			return nil, err
 		}
-		return NewLoadBalance(groupOption, opt, emptyFallback, providers)
+		group, err = NewLoadBalance(groupOption, opt, emptyFallback, providers)
 	case "relay":
 		return nil, fmt.Errorf("%w: The group [%s] with relay type was removed, please using dialer-proxy instead", errType, groupName)
 	case "smart":
@@ -221,10 +249,31 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 		if err != nil {
 			return nil, err
 		}
-		return NewSmart(groupOption, opt, emptyFallback, providers)
+		group, err = NewSmart(groupOption, opt, emptyFallback, providers)
 	default:
 		return nil, fmt.Errorf("%w: %s", errType, groupOption.Type)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if profile != nil {
+		group.(pingProfiled).setPingProfile(profile)
+	}
+	return group, nil
+}
+
+// pingInterval is the interval, in seconds, the provider of a group with
+// ping-config is registered with when the group sets none: the profile's
+// own loop paces the checks, this only starts it.
+func pingInterval(option GroupCommonOption) uint {
+	if option.Interval > 0 {
+		return uint(option.Interval)
+	}
+	return 300
+}
+
+type pingProfiled interface {
+	setPingProfile(profile *pingconfig.Profile)
 }
 
 func getProxies(mapping map[string]C.Proxy, list []string) ([]C.Proxy, error) {

@@ -11,6 +11,7 @@ import (
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/pingconfig"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -39,6 +40,8 @@ type GroupBase struct {
 	getProxiesMutex  sync.Mutex
 	providerVersions []uint32
 	providerProxies  []C.Proxy
+
+	pingProfile *pingconfig.Profile
 }
 
 type GroupBaseOption struct {
@@ -99,6 +102,24 @@ func NewGroupBase(opt GroupBaseOption) *GroupBase {
 	}
 
 	return gb
+}
+
+// PingProfile is the ping-config the group set, nil without one.
+func (gb *GroupBase) PingProfile() *pingconfig.Profile {
+	return gb.pingProfile
+}
+
+func (gb *GroupBase) setPingProfile(profile *pingconfig.Profile) {
+	gb.pingProfile = profile
+}
+
+// withPingConfig adds the ping-config that checks testUrl to a group's
+// JSON, when there is one: the group's own or another group's on the url.
+func withPingConfig(mapping map[string]any, testUrl string) map[string]any {
+	if profile := pingconfig.Lookup(testUrl); profile != nil {
+		mapping["pingConfig"] = profile
+	}
+	return mapping
 }
 
 func (gb *GroupBase) Hidden() bool {

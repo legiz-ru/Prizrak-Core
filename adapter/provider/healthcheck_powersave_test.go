@@ -72,3 +72,26 @@ func TestHealthCheckFollowsPowerSave(t *testing.T) {
 		t.Fatalf("back in use: %d checks within 20ms, want the catch-up one", n)
 	}
 }
+
+// A ping-config cycle follows the power-save mode as the ticks do: none
+// while idle, one per backgroundInterval with the screen off.
+func TestPingCycleFollowsPowerSave(t *testing.T) {
+	defer powersave.Set(powersave.Active)
+	hc := NewHealthCheck([]C.Proxy{&countingProxy{}}, "http://example.invalid", 1000, 300, false, nil)
+	defer hc.close()
+
+	if !hc.pingCycleDue(time.Minute, time.Now()) {
+		t.Fatal("active: a cycle runs")
+	}
+	powersave.Set(powersave.Idle)
+	if hc.pingCycleDue(time.Minute, time.Time{}) {
+		t.Fatal("idle: no cycle")
+	}
+	powersave.Set(powersave.Background)
+	if hc.pingCycleDue(time.Minute, time.Now().Add(-10*time.Minute)) {
+		t.Fatal("background: a cycle 10 minutes after the last one")
+	}
+	if !hc.pingCycleDue(time.Minute, time.Now().Add(-backgroundInterval)) {
+		t.Fatal("background: no cycle after backgroundInterval")
+	}
+}

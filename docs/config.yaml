@@ -1974,6 +1974,20 @@ proxy-groups:
     # expected-status: 204 # 当健康检查返回状态码与期望值不符时，认为节点不可用
     url: "https://cp.cloudflare.com/generate_204"
     interval: 300
+    # ping-config (Prizrak-Core): the delay still comes from url; after it
+    # the node must also answer destination within timeout, or it is dead.
+    # Checks run at random moments of each interval. One ping-config per url:
+    # every group, provider and API test of this url follows it.
+    # Works in url-test, fallback, load-balance and smart; in select it only
+    # changes manual tests.
+    # ping-config:
+    #   destination: https://speed.cloudflare.com/__down?bytes=51200 # default: url
+    #   http-method: GET     # HEAD (default) | GET: GET reads the body, up to 4 MiB
+    #   interval: 60s        # default: the group's interval; at least 10s; a number is seconds
+    #   sampling: 1          # checks of each node per interval × sampling; >1 judges by the window of 2 cycles
+    #   timeout: 3s          # for destination; default: the group's timeout; a number is milliseconds
+    #   connectivity: http://connectivitycheck.gstatic.com/generate_204 # asked DIRECT after a failure: offline, the failure is not recorded
+    # A GET of 50 KB every 60s is ~70 MB a day per node.
 
   # fallback 将按照 url 测试结果按照节点顺序选择
   - name: "fallback-auto"

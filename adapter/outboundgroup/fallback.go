@@ -83,7 +83,7 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 	for _, proxy := range f.GetProxies(false) {
 		all = append(all, proxy.Name())
 	}
-	return json.Marshal(map[string]any{
+	return json.Marshal(withPingConfig(map[string]any{
 		"type":           f.Type().String(),
 		"now":            f.Now(),
 		"all":            all,
@@ -93,7 +93,7 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 		"hidden":         f.Hidden(),
 		"icon":           f.Icon(),
 		"emptyFallback":  f.EmptyFallback().Name(),
-	})
+	}, f.testUrl))
 }
 
 // Unwrap implements C.ProxyAdapter
