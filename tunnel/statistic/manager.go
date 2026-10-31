@@ -7,6 +7,7 @@ import (
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/xsync"
 	"github.com/metacubex/mihomo/component/memory"
+	"github.com/metacubex/mihomo/component/powersave"
 )
 
 var DefaultManager *Manager
@@ -119,8 +120,27 @@ func (m *Manager) handle() {
 	ticker := time.NewTicker(time.Second)
 
 	for range ticker.C {
-		m.uploadBlip.Store(m.uploadTemp.Swap(0))
-		m.downloadBlip.Store(m.downloadTemp.Swap(0))
+		up, down := m.uploadTemp.Swap(0), m.downloadTemp.Swap(0)
+		m.uploadBlip.Store(up)
+		m.downloadBlip.Store(down)
+
+		// Not in use (component/powersave) and the speed down to zero: the
+		// once-a-second tick only woke the process to say so again. It waits
+		// for active use instead, with the speeds at zero, and starts afresh:
+		// the bytes counted meanwhile are not this second's.
+		if up == 0 && down == 0 && powersave.Current() != powersave.Active {
+			ticker.Stop()
+			for {
+				changed := powersave.Changed()
+				if powersave.Current() == powersave.Active {
+					break
+				}
+				<-changed
+			}
+			m.uploadTemp.Store(0)
+			m.downloadTemp.Store(0)
+			ticker.Reset(time.Second)
+		}
 	}
 }
 

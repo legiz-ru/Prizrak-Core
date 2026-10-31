@@ -516,6 +516,7 @@ func getLogs(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan log.Event, 1024)
 	sub := log.Subscribe()
 	defer log.UnSubscribe(sub)
+	defer log.Want(level)()
 	buf := &bytes.Buffer{}
 
 	go func() {

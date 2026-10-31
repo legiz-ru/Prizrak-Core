@@ -10,22 +10,37 @@ import (
 type singLogger struct{}
 
 func (l singLogger) TraceContext(ctx context.Context, args ...any) {
+	if !enabled(DEBUG) {
+		return
+	}
 	Debugln(fmt.Sprint(args...))
 }
 
 func (l singLogger) DebugContext(ctx context.Context, args ...any) {
+	if !enabled(DEBUG) {
+		return
+	}
 	Debugln(fmt.Sprint(args...))
 }
 
 func (l singLogger) InfoContext(ctx context.Context, args ...any) {
+	if !enabled(INFO) {
+		return
+	}
 	Infoln(fmt.Sprint(args...))
 }
 
 func (l singLogger) WarnContext(ctx context.Context, args ...any) {
+	if !enabled(WARNING) {
+		return
+	}
 	Warnln(fmt.Sprint(args...))
 }
 
 func (l singLogger) ErrorContext(ctx context.Context, args ...any) {
+	if !enabled(ERROR) {
+		return
+	}
 	Errorln(fmt.Sprint(args...))
 }
 
@@ -38,22 +53,37 @@ func (l singLogger) PanicContext(ctx context.Context, args ...any) {
 }
 
 func (l singLogger) Trace(args ...any) {
+	if !enabled(DEBUG) {
+		return
+	}
 	Debugln(fmt.Sprint(args...))
 }
 
 func (l singLogger) Debug(args ...any) {
+	if !enabled(DEBUG) {
+		return
+	}
 	Debugln(fmt.Sprint(args...))
 }
 
 func (l singLogger) Info(args ...any) {
+	if !enabled(INFO) {
+		return
+	}
 	Infoln(fmt.Sprint(args...))
 }
 
 func (l singLogger) Warn(args ...any) {
+	if !enabled(WARNING) {
+		return
+	}
 	Warnln(fmt.Sprint(args...))
 }
 
 func (l singLogger) Error(args ...any) {
+	if !enabled(ERROR) {
+		return
+	}
 	Errorln(fmt.Sprint(args...))
 }
 
@@ -70,10 +100,16 @@ type singInfoToDebugLogger struct {
 }
 
 func (l singInfoToDebugLogger) InfoContext(ctx context.Context, args ...any) {
+	if !enabled(DEBUG) {
+		return
+	}
 	Debugln(fmt.Sprint(args...))
 }
 
 func (l singInfoToDebugLogger) Info(args ...any) {
+	if !enabled(DEBUG) {
+		return
+	}
 	Debugln(fmt.Sprint(args...))
 }
 

@@ -119,6 +119,11 @@ func (t *Tuic) dial(ctx context.Context) (quicConn *quic.Conn, err error) {
 	return quicConn, nil
 }
 
+// CloseIdle implements C.IdleCloser
+func (t *Tuic) CloseIdle(idle time.Duration) {
+	t.client.CloseIdle(idle)
+}
+
 // ProxyInfo implements C.ProxyAdapter
 func (t *Tuic) ProxyInfo() C.ProxyInfo {
 	info := t.Base.ProxyInfo()

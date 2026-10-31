@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
@@ -405,6 +406,13 @@ func (p *autoCloseProxyAdapter) Close() error {
 		p.closeErr = p.ProxyAdapter.Close()
 	})
 	return p.closeErr
+}
+
+// CloseIdle implements C.IdleCloser for the adapter inside, when it does.
+func (p *autoCloseProxyAdapter) CloseIdle(idle time.Duration) {
+	if closer, ok := p.ProxyAdapter.(C.IdleCloser); ok {
+		closer.CloseIdle(idle)
+	}
 }
 
 func NewAutoCloseProxyAdapter(adapter ProxyAdapter) ProxyAdapter {

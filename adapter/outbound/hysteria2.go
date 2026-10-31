@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
@@ -34,6 +35,13 @@ type Hysteria2 struct {
 
 	option *Hysteria2Option
 	client *hysteria2.Client
+
+	// For CloseIdle: connections open through the client, and when one was
+	// last asked for (set before the dial, so one in progress counts as use).
+	open    atomic.Int64
+	lastUse atomic.Int64
+	// idleClosed: CloseIdle closed the session and nothing has dialed since.
+	idleClosed atomic.Bool
 }
 
 type Hysteria2Option struct {
@@ -90,17 +98,22 @@ type Hysteria2RealmOption struct {
 }
 
 func (h *Hysteria2) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
+	h.lastUse.Store(time.Now().UnixNano())
+	h.idleClosed.Store(false)
 	c, err := h.client.DialConn(ctx, M.ParseSocksaddrHostPort(metadata.String(), metadata.DstPort))
 	if err != nil {
 		return nil, err
 	}
-	return NewConn(c, h), nil
+	h.open.Add(1)
+	return NewConn(&countedConn{Conn: c, release: h.release}, h), nil
 }
 
 func (h *Hysteria2) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (_ C.PacketConn, err error) {
 	if err = h.ResolveUDP(ctx, metadata); err != nil {
 		return nil, err
 	}
+	h.lastUse.Store(time.Now().UnixNano())
+	h.idleClosed.Store(false)
 	pc, err := h.client.ListenPacket(ctx)
 	if err != nil {
 		return nil, err
@@ -108,7 +121,23 @@ func (h *Hysteria2) ListenPacketContext(ctx context.Context, metadata *C.Metadat
 	if pc == nil {
 		return nil, errors.New("packetConn is nil")
 	}
-	return NewPacketConn(N.NewThreadSafePacketConn(pc), h), nil
+	h.open.Add(1)
+	return NewPacketConn(N.NewThreadSafePacketConn(&countedPacketConn{PacketConn: pc, release: h.release}), h), nil
+}
+
+func (h *Hysteria2) release() {
+	h.open.Add(-1)
+	h.lastUse.Store(time.Now().UnixNano())
+}
+
+// CloseIdle implements C.IdleCloser
+func (h *Hysteria2) CloseIdle(idle time.Duration) {
+	if h.client == nil || h.idleClosed.Load() || h.open.Load() > 0 || time.Since(time.Unix(0, h.lastUse.Load())) < idle {
+		return
+	}
+	h.idleClosed.Store(true)
+	log.Debugln("[Hysteria2] %s: closing the idle session", h.Name())
+	_ = h.client.CloseWithError(errIdleSession)
 }
 
 // Close implements C.ProxyAdapter

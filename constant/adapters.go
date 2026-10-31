@@ -125,6 +125,15 @@ type ProxyInfo struct {
 	DialerProxy  string
 }
 
+// IdleCloser is an adapter keeping a session open between connections (QUIC
+// for TUIC and Hysteria2) that it can drop while nothing has used it for idle:
+// the session's keep-alive goes on whether or not anything uses it, and on a
+// phone with the screen off that is a radio wake-up every few seconds. The
+// next connection opens a new one. See tunnel/powersave.go.
+type IdleCloser interface {
+	CloseIdle(idle time.Duration)
+}
+
 type ProxyAdapter interface {
 	Name() string
 	Type() AdapterType

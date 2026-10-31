@@ -15,6 +15,7 @@ import (
 
 var (
 	ClientClosed       = errors.New("tuic: client closed")
+	ClientIdle         = errors.New("tuic: idle connection closed to save power")
 	TooManyOpenStreams = errors.New("tuic: too many open streams")
 )
 
@@ -27,6 +28,9 @@ type Client interface {
 	LastVisited() time.Time
 	SetLastVisited(last time.Time)
 	Close()
+	// CloseIdle drops the QUIC connection while no stream is open; the next
+	// dial makes a new one, and the client stays usable.
+	CloseIdle()
 }
 
 type ServerHandler interface {

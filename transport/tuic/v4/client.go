@@ -250,6 +250,16 @@ func (t *clientImpl) forceClose(quicConn *quic.Conn, err error) {
 	})
 }
 
+func (t *clientImpl) CloseIdle() {
+	t.connMutex.Lock()
+	idle := t.quicConn != nil && t.openStreams.Load() == 0
+	t.connMutex.Unlock()
+	if idle {
+		log.Debugln("[TUIC] closing the idle connection of client %p", t)
+		t.forceClose(nil, types.ClientIdle)
+	}
+}
+
 func (t *clientImpl) Close() {
 	t.closed.Store(true)
 	if t.openStreams.Load() == 0 {

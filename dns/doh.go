@@ -567,7 +567,7 @@ func (doh *dnsOverHTTPS) dialQuic(ctx context.Context, addr string, tlsCfg *tls.
 		// It's ok if net.SplitHostPort returns an error - it could be a hostname/IP address without a port.
 		tlsCfg.ServerName = doh.url.Host
 	}
-	quicConn, err := transport.DialEarly(ctx, &udpAddr, tlsCfg, cfg)
+	quicConn, err := transport.DialEarly(ctx, &udpAddr, tlsCfg, quietQUICConfig(cfg))
 	if err != nil {
 		_ = packetConn.Close()
 		return nil, err

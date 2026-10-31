@@ -362,7 +362,7 @@ func (doq *dnsOverQUIC) openConnection(ctx context.Context) (quicConn *quic.Conn
 	transport := quic.Transport{Conn: packetConn}
 	transport.SetCreatedConn(true) // auto close conn
 	transport.SetSingleUse(true)   // auto close transport
-	quicConn, err = transport.Dial(ctx, &udpAddr, tlsConfig, doq.getQUICConfig())
+	quicConn, err = transport.Dial(ctx, &udpAddr, tlsConfig, quietQUICConfig(doq.getQUICConfig()))
 	if err != nil {
 		_ = packetConn.Close()
 		return nil, fmt.Errorf("opening quic connection to %s: %w", doq.addr, err)

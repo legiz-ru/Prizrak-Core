@@ -9,6 +9,7 @@ import (
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/singledo"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/powersave"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
@@ -37,27 +38,70 @@ type HealthCheck struct {
 	lazy           bool
 	expectedStatus utils.IntRanges[uint16]
 	lastTouch      atomic.TypedValue[time.Time]
+	lastCheck      atomic.TypedValue[time.Time]
 	singleDo       *singledo.Single[struct{}]
 	timeout        time.Duration
 }
 
+// backgroundInterval is how often, at most, the scheduled checks run while the
+// device is in powersave.Background (screen off): sing-box stops its url-test
+// checks after the same 30 minutes without use. Checks after failed dials
+// (outboundgroup's onDialFailed) are not scheduled ones and run whatever the
+// mode, so a dead node is still left as before.
+const backgroundInterval = 30 * time.Minute
+
 func (hc *HealthCheck) process() {
 	ticker := time.NewTicker(hc.interval)
 	go hc.check()
+	// missed: a scheduled check was held back by the power-save mode.
+	missed := false
 	for {
+		changed := powersave.Changed()
 		select {
 		case <-ticker.C:
-			lastTouch := hc.lastTouch.Load()
-			since := time.Since(lastTouch)
-			if !hc.lazy || since < hc.interval {
-				hc.check()
-			} else {
-				log.Debugln("Skip once health check because we are lazy")
+			if !hc.scheduledDue() {
+				missed = true
+				continue
+			}
+			missed = false
+			hc.scheduledCheck()
+		case <-changed:
+			// Back in use after a check was held back, and the last one is
+			// older than the interval: catch up once, as sing-box does after
+			// a pause, rather than wait for the next tick.
+			if missed && powersave.Current() == powersave.Active && time.Since(hc.lastCheck.Load()) >= hc.interval {
+				missed = false
+				hc.scheduledCheck()
 			}
 		case <-hc.ctx.Done():
 			ticker.Stop()
 			return
 		}
+	}
+}
+
+// scheduledDue says whether a tick's check may run in the current power-save
+// mode: always when active, every backgroundInterval with the screen off
+// (half a tick of slack, so a check landing a little early is not put off a
+// whole interval), never while the device is idle.
+func (hc *HealthCheck) scheduledDue() bool {
+	switch powersave.Current() {
+	case powersave.Background:
+		return time.Since(hc.lastCheck.Load())+hc.interval/2 >= backgroundInterval
+	case powersave.Idle:
+		return false
+	default:
+		return true
+	}
+}
+
+func (hc *HealthCheck) scheduledCheck() {
+	lastTouch := hc.lastTouch.Load()
+	since := time.Since(lastTouch)
+	if !hc.lazy || since < hc.interval {
+		hc.check()
+	} else {
+		log.Debugln("Skip once health check because we are lazy")
 	}
 }
 
@@ -142,6 +186,7 @@ func (hc *HealthCheck) check() {
 			}
 		}
 		_ = b.Wait()
+		hc.lastCheck.Store(time.Now())
 		log.Debugln("Finish A Health Checking {%s}", id)
 		return struct{}{}, nil
 	})
