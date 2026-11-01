@@ -1,0 +1,118 @@
+package xhttp
+
+import (
+	"context"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/metacubex/http"
+	"github.com/stretchr/testify/assert"
+)
+
+func h2TestRequests(tr http.RoundTripper, n int, timeout time.Duration) int32 {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	var wg sync.WaitGroup
+	var ok atomic.Int32
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://localhost/", nil)
+			if err != nil {
+				return
+			}
+			if resp, err := tr.RoundTrip(req); err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				ok.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	return ok.Load()
+}
+
+// While a TLS handshake hangs, for example because a censor drops the flow
+// after the ClientHello, the requests waiting for HTTP/2 share one dial
+// (XTLS/Xray-core#6797) instead of opening a connection each.
+func TestH2ClientSharesOneDialWhileHandshakeHangs(t *testing.T) {
+	var dials atomic.Int32
+	tr := NewTransport(func(ctx context.Context) (net.Conn, error) {
+		dials.Add(1)
+		a, b := net.Pipe()
+		go func() { _, _ = io.Copy(io.Discard, b) }()
+		return a, nil
+	}, func(ctx context.Context, c net.Conn, isH2 bool) (net.Conn, error) {
+		<-ctx.Done() // the handshake never completes
+		_ = c.Close()
+		return nil, ctx.Err()
+	}, nil, nil, 0, nil)
+	defer closeTestTransport(tr)
+
+	assert.Zero(t, h2TestRequests(tr, 16, 500*time.Millisecond))
+	assert.EqualValues(t, 1, dials.Load(), "16 requests waiting on a hung handshake must open one connection")
+}
+
+// Requests that start together on a fresh transport share one HTTP/2
+// connection; more are dialed, one at a time, only when the server's stream
+// limit is reached.
+func TestH2ClientBurstOpensOneConnection(t *testing.T) {
+	for _, tc := range []struct {
+		streams uint32
+		want    int32
+	}{{0, 1}, {4, 4}} {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		assert.NoError(t, err)
+		srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(100 * time.Millisecond)
+			_, _ = w.Write([]byte("ok"))
+		})}
+		srv.Protocols = new(http.Protocols)
+		srv.Protocols.SetUnencryptedHTTP2(true)
+		srv.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: int(tc.streams)}
+		go func() { _ = srv.Serve(ln) }()
+
+		var dials atomic.Int32
+		tr := NewTransport(func(ctx context.Context) (net.Conn, error) {
+			dials.Add(1)
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", ln.Addr().String())
+		}, func(ctx context.Context, c net.Conn, isH2 bool) (net.Conn, error) { return c, nil }, nil, nil, 0, nil)
+
+		assert.EqualValues(t, 16, h2TestRequests(tr, 16, 5*time.Second))
+		assert.EqualValues(t, tc.want, dials.Load(), "server stream limit %d", tc.streams)
+		closeTestTransport(tr)
+		_ = srv.Close()
+	}
+}
+
+func closeTestTransport(tr http.RoundTripper) {
+	if t, ok := tr.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
+}
+
+// A packet-up POST can be sent again: HTTP/2 replays it on a new connection
+// when a GOAWAY retires the one it went out on (XTLS/Xray-core#6632).
+func TestFillPacketRequestCanReplayBody(t *testing.T) {
+	config := Config{}
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/", nil)
+	assert.NoError(t, err)
+	assert.NoError(t, config.FillPacketRequest(req, "session", "0", []byte("hello xhttp")))
+	if !assert.NotNil(t, req.GetBody) {
+		return
+	}
+	first, err := io.ReadAll(req.Body)
+	assert.NoError(t, err)
+	again, err := req.GetBody()
+	assert.NoError(t, err)
+	second, err := io.ReadAll(again)
+	assert.NoError(t, err)
+	assert.Equal(t, "hello xhttp", string(first))
+	assert.Equal(t, string(first), string(second))
+}

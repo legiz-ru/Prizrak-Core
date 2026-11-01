@@ -575,6 +575,11 @@ func (c *Config) FillPacketRequest(request *http.Request, sessionId string, seqS
 		request.Header = c.GetRequestHeader()
 		request.Body = io.NopCloser(bytes.NewReader(data))
 		request.ContentLength = int64(len(data))
+		// GetBody lets HTTP/2 send the packet again on a new connection
+		// when the server's GOAWAY retires the one it went out on.
+		request.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(data)), nil
+		}
 	} else {
 		request.Body = nil
 		request.ContentLength = 0

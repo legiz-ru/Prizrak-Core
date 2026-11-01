@@ -232,6 +232,12 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 			return wrapped, nil
 		},
 		IdleConnTimeout: ConnIdleTimeout,
+		// For HTTP/2 this bounds only the connections being dialed at once:
+		// requests that start together wait for one dial and share its
+		// connection, instead of each opening its own while a TLS handshake
+		// is under way (XTLS/Xray-core#6797). A burst of handshakes is what
+		// censors look for, and it would get past reuse max-connections.
+		MaxConnsPerHost: 1,
 		Protocols:       protocols,
 		HTTP2:           http2Config,
 	}
