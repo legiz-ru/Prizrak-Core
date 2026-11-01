@@ -28,7 +28,15 @@ func Client(c net.Conn, config *utls.Config) *Conn {
 }
 
 func UClient(c net.Conn, config *utls.Config, fingerprint UClientHelloID) *UConn {
-	return utls.UClient(c, config, fingerprint)
+	uConn := utls.UClient(c, config, fingerprint)
+	if isRandomized(fingerprint) {
+		// The hello is built now so its P-256 key share can go; a failed
+		// build is left to the handshake, which builds it again.
+		if err := uConn.BuildHandshakeState(); err == nil {
+			_ = DropRandomizedP256KeyShare(uConn)
+		}
+	}
+	return uConn
 }
 
 func Server(c net.Conn, config *utls.Config) *Conn {
@@ -61,9 +69,10 @@ func GetFingerprint(clientFingerprint string) (UClientHelloID, bool) {
 
 var randomFingerprint = once.OnceValue(func() UClientHelloID {
 	chooser, _ := weightedrand.NewChooser(
+		// Only fingerprints that send X25519MLKEM768: Xray's REALITY servers
+		// turn away a hello without it, and "ios" (iOS 14) has none.
 		weightedrand.NewChoice("chrome", 6),
 		weightedrand.NewChoice("safari", 3),
-		weightedrand.NewChoice("ios", 2),
 		weightedrand.NewChoice("firefox", 1),
 	)
 	initClient := chooser.Pick()
@@ -100,14 +109,57 @@ var fingerprints = map[string]UClientHelloID{
 	"randomized":                 utls.HelloRandomized,
 }
 
-func init() {
+// randomizedWeights are the weights of the "randomized" fingerprint. uTLS
+// offers X25519MLKEM768 in supported_groups (CurveIDs_Append_X25519, under
+// TLS 1.3) and sends its key share (KeyShare_Append_RandomGroups) on two
+// independent draws. The group without its key share makes a server that
+// prefers it ask again, which uTLS cannot answer, and REALITY turns such a
+// hello away; the key share without the group breaks RFC 8446, Section
+// 4.2.8. Both are always drawn, as current browsers send them, as in
+// Jolymmiles/Xray-core. The second weight also adds a P-256 key share, which
+// DropRandomizedP256KeyShare removes. The fingerprint is recognized by the
+// address of these weights.
+var randomizedWeights = func() utls.Weights {
 	weights := utls.DefaultWeights
 	weights.TLSVersMax_Set_VersionTLS13 = 1
 	weights.FirstKeyShare_Set_CurveP256 = 0
+	weights.CurveIDs_Append_X25519 = 1
+	weights.KeyShare_Append_RandomGroups = 1
+	return weights
+}()
+
+func init() {
 	randomized := utls.HelloRandomized
 	randomized.Seed, _ = utls.NewPRNGSeed()
-	randomized.Weights = &weights
+	randomized.Weights = &randomizedWeights
 	fingerprints["randomized"] = randomized
+}
+
+func isRandomized(fingerprint UClientHelloID) bool {
+	return fingerprint.Weights == &randomizedWeights && fingerprint.Client == utls.HelloRandomized.Client
+}
+
+// DropRandomizedP256KeyShare takes the P-256 key share out of a built
+// "randomized" hello and builds it again: X25519MLKEM768 and X25519 with keys
+// of their own is what Chrome sends, and a server that wants P-256 asks for
+// its key share. It does nothing for other fingerprints.
+func DropRandomizedP256KeyShare(uConn *UConn) error {
+	if !isRandomized(uConn.ClientHelloID) {
+		return nil
+	}
+	for _, extension := range uConn.Extensions {
+		if ks, ok := extension.(*utls.KeyShareExtension); ok {
+			count := len(ks.KeyShares)
+			ks.KeyShares = slices.DeleteFunc(ks.KeyShares, func(share utls.KeyShare) bool {
+				return share.Group == utls.CurveP256
+			})
+			if len(ks.KeyShares) == count {
+				return nil
+			}
+			return uConn.BuildHandshakeState()
+		}
+	}
+	return nil
 }
 
 type Certificate = utls.Certificate

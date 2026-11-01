@@ -72,6 +72,9 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 		if err != nil {
 			return nil, err
 		}
+		if err := DropRandomizedP256KeyShare(uConn); err != nil {
+			return nil, err
+		}
 
 		hello := uConn.HandshakeState.Hello
 		rawSessionID := hello.Raw[39 : 39+32] // the location of session ID
