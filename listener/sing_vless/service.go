@@ -139,7 +139,10 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 		}
 		return s.handler.NewPacketConnection(ctx, &serverPacketConn{ExtendedConn: bufio.NewExtendedConn(conn), destination: destination}, metadata)
 	case vless.CommandMux:
-		return vmess.HandleMuxConnection(ctx, conn, metadata, s.handler)
+		// The handler serves Mux.Cool at its special destination, with the
+		// native server of transport/muxcool, as for VMess.
+		metadata.Destination = vmess.MuxDestination
+		return s.handler.NewConnection(ctx, conn, metadata)
 	default:
 		return E.New("unknown command: ", command)
 	}
