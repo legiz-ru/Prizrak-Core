@@ -8,6 +8,7 @@ import (
 	"github.com/metacubex/mihomo/listener/sing_vless"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/finalmask/option"
+	"github.com/metacubex/mihomo/transport/xhttp"
 )
 
 type VlessOption struct {
@@ -59,6 +60,12 @@ type XHTTPConfig struct {
 	ScStreamUpServerSecs string `inbound:"sc-stream-up-server-secs,omitempty"`
 	ScMaxBufferedPosts   string `inbound:"sc-max-buffered-posts,omitempty"`
 	ScMaxEachPostBytes   string `inbound:"sc-max-each-post-bytes,omitempty"`
+	// Server only: Mux.Cool KeepAlive pokes of idle packet-up and stream-up
+	// downlinks, the governor's server role and the HTTP/2 settings.
+	MuxKeepAliveSecs  string                     `inbound:"mux-keep-alive-secs,omitempty"`
+	MuxKeepAliveBytes string                     `inbound:"mux-keep-alive-bytes,omitempty"`
+	H2Flow            *xhttp.H2FlowServerOptions `inbound:"h2-flow,omitempty"`
+	H2Params          *xhttp.H2Params            `inbound:"h2-params,omitempty"`
 }
 
 func (o XHTTPConfig) Build() LC.XHTTPConfig {
@@ -84,6 +91,10 @@ func (o XHTTPConfig) Build() LC.XHTTPConfig {
 		ScStreamUpServerSecs: o.ScStreamUpServerSecs,
 		ScMaxBufferedPosts:   o.ScMaxBufferedPosts,
 		ScMaxEachPostBytes:   o.ScMaxEachPostBytes,
+		MuxKeepAliveSecs:     o.MuxKeepAliveSecs,
+		MuxKeepAliveBytes:    o.MuxKeepAliveBytes,
+		H2Flow:               o.H2Flow,
+		H2Params:             o.H2Params,
 	}
 }
 

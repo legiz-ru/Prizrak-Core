@@ -1090,7 +1090,7 @@ proxies: # socks5
       # x-padding-header: Referer
       # x-padding-placement: queryInHeader # Available: queryInHeader, cookie, header, query
       # x-padding-method: repeat-x # Available: repeat-x, tokenish
-      # uplink-http-method: POST # Available: POST, PUT, PATCH, DELETE, GET (GET 仅 packet-up，数据放在 header/cookie/body / GET for packet-up only, data in header/cookie/body)
+      # uplink-http-method: POST # Available: POST, PUT, PATCH, DELETE, OPTIONS, GET (GET 仅 packet-up，数据放在 header/cookie/body / GET for packet-up only, data in header/cookie/body)
       # session-placement: path # Available: path, query, cookie, header
       # session-key: ""
       # seq-placement: path # Available: path, query, cookie, header
@@ -2653,7 +2653,7 @@ listeners:
     #   x-padding-header: Referer
     #   x-padding-placement: queryInHeader # Available: queryInHeader, cookie, header, query
     #   x-padding-method: repeat-x # Available: repeat-x, tokenish
-    #   uplink-http-method: POST # Available: POST, PUT, PATCH, DELETE
+    #   uplink-http-method: POST # Available: POST, PUT, PATCH, DELETE, OPTIONS, GET (packet-up only)
     #   session-placement: path # Available: path, query, cookie, header
     #   session-key: ""
     #   session-table: "" # Available: "", "uuid", "ALPHABET", "Alphabet", "BASE36", "Base62", "HEX", "alphabet", "base36", "hex", "number"
@@ -2666,6 +2666,26 @@ listeners:
     #   sc-max-buffered-posts: 30
     #   sc-stream-up-server-secs: "20-80"
     #   sc-max-each-post-bytes: 1000000
+    #   mux-keep-alive-secs: "" # e.g. "20-25": a Mux.Cool server pokes a packet-up or stream-up downlink idle that long with a KeepAlive frame, so CDNs and reverse proxies do not cut it; stream-one is never poked. Empty: off
+    #   mux-keep-alive-bytes: "" # padding of each poke, e.g. "100-500", at most 1024
+    #   h2-flow: # server role of the HTTP/2 flow governor (as h2Flow in Jolymmiles/Xray-core); HTTP/2 only
+    #     enabled: false
+    #     max-stream-receive-window: 0 # upload window per stream, 65535-1073741824; 0: 6 MiB with the governor, Go's 1 MiB without
+    #     max-connection-receive-window: 0 # upload window per connection, same range and defaults
+    #     max-connection-send-window: 0 # how much of the server's data one connection's client may hold; 0: 4 MiB, -1: no limit
+    #     queue-cuts: true # cut download caps against a queue other traffic keeps on the path
+    #   h2-params: # HTTP/2 settings of the server (as h2Params in Xray); unset fields keep Go's defaults
+    #     max-concurrent-streams: 0 # at most 4096 with h2-flow
+    #     max-read-frame-size: 0
+    #     max-receive-buffer-per-connection: 0
+    #     max-receive-buffer-per-stream: 0
+    #     max-decoder-header-table-size: 0
+    #     max-encoder-header-table-size: 0
+    #     send-ping-timeout: "" # e.g. "30s", or a number of seconds
+    #     ping-timeout: ""
+    #     write-byte-timeout: ""
+    #     strict-max-concurrent-requests: false
+    #     permit-prohibited-cipher-suites: false
     # finalmask: 服务端的 finalmask (同 Xray-core)，与客户端 proxies 中的 finalmask 配置相同的掩码链，见上文 vless-finalmask
     # finalmask: the server side of Xray-core's finalmask; the same TCP chain as the client's, see vless-finalmask above
     # 包在 TLS/REALITY 之下，所有传输层 (tcp/ws/grpc/xhttp) 生效；监听端没有 HTTP/3，所以只支持 tcp 掩码，trojan 监听同样支持

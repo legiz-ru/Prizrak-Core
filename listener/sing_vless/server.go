@@ -242,8 +242,15 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			ConnHandler: func(conn net.Conn) {
 				sl.HandleConn(conn, tunnel, additions...)
 			},
-			HttpHandler: httpServer.Handler,
+			HttpHandler:       httpServer.Handler,
+			MuxKeepAliveSecs:  config.XHTTPConfig.MuxKeepAliveSecs,
+			MuxKeepAliveBytes: config.XHTTPConfig.MuxKeepAliveBytes,
 		})
+		if err != nil {
+			return nil, err
+		}
+		// Parsed before any listener binds, so a bad value leaves none behind.
+		httpServer.HTTP2, err = xhttp.ServerHTTP2Config(config.XHTTPConfig.H2Params, config.XHTTPConfig.H2Flow)
 		if err != nil {
 			return nil, err
 		}
@@ -286,6 +293,15 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			l = tls.NewListener(l, tlsConfig)
 		} else if sl.decryption == nil && !config.AllowInsecure {
 			return nil, errors.New("disallow using Vless without any certificates/shadow-tls/res-tls/jls/reality/decryption/allow-insecure config")
+		}
+		if httpServer.Handler != nil && config.XHTTPConfig.H2Flow != nil {
+			// The governor reads what the HTTP server reads: above TLS and REALITY.
+			fl, err := xhttp.NewFlowListener(l, config.XHTTPConfig.H2Flow, httpServer.HTTP2)
+			if err != nil {
+				_ = l.Close()
+				return nil, err
+			}
+			l = fl
 		}
 		sl.listeners = append(sl.listeners, l)
 

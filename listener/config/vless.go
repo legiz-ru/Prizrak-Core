@@ -6,6 +6,7 @@ import (
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/transport/finalmask/option"
+	"github.com/metacubex/mihomo/transport/xhttp"
 )
 
 type VlessUser struct {
@@ -58,6 +59,10 @@ type XHTTPConfig struct {
 	ScStreamUpServerSecs string
 	ScMaxBufferedPosts   string
 	ScMaxEachPostBytes   string
+	MuxKeepAliveSecs     string
+	MuxKeepAliveBytes    string
+	H2Flow               *xhttp.H2FlowServerOptions `json:"h2-flow,omitempty"`
+	H2Params             *xhttp.H2Params            `json:"h2-params,omitempty"`
 }
 
 func (t VlessServer) String() string {

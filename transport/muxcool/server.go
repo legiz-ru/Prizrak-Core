@@ -13,6 +13,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/contextutils"
 
+	"github.com/metacubex/sing/common"
 	"github.com/metacubex/sing/common/auth"
 	M "github.com/metacubex/sing/common/metadata"
 	N "github.com/metacubex/sing/common/network"
@@ -216,6 +217,11 @@ func newServerCarrier(runtime *ServerRuntime, parent context.Context, conn net.C
 }
 
 func (c *serverCarrier) serve() error {
+	if conn, ok := common.Cast[KeepAliveConn](c.conn); ok {
+		if _, to := conn.MuxKeepAlive(); to > 0 {
+			go c.keepAlive(conn)
+		}
+	}
 	ctxDone := c.ctx.Done()
 	if ctxDone != nil {
 		go func() {

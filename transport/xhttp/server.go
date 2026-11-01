@@ -21,7 +21,17 @@ type ServerOption struct {
 	Config
 	ConnHandler func(net.Conn)
 	HttpHandler http.Handler
+
+	// MuxKeepAliveSecs, a range of seconds such as "20-25", lets a Mux.Cool
+	// server poke a packet-up or stream-up downlink that has carried nothing
+	// for that long; MuxKeepAliveBytes is the padding range of each poke, at
+	// most 1024 bytes. Both are off when empty; stream-one is never poked.
+	MuxKeepAliveSecs  string
+	MuxKeepAliveBytes string
 }
+
+// maxMuxKeepAlivePadding keeps a KeepAlive frame and its padding small.
+const maxMuxKeepAlivePadding = 1024
 
 type httpServerConn struct {
 	mu      sync.Mutex
@@ -104,6 +114,8 @@ type requestHandler struct {
 	scMaxEachPostBytes   Range
 	scStreamUpServerSecs Range
 	scMaxBufferedPosts   Range
+	muxKeepAlive         Range
+	muxKeepAliveBytes    Range
 
 	mu       sync.Mutex
 	sessions map[string]*httpSession
@@ -126,8 +138,33 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	muxKeepAlive, err := ParseRange(opt.MuxKeepAliveSecs, "0")
+	if err != nil {
+		return nil, fmt.Errorf("xhttp mux-keep-alive-secs: %w", err)
+	}
+	if muxKeepAlive.Min < 0 {
+		return nil, fmt.Errorf("xhttp mux-keep-alive-secs %q is negative", opt.MuxKeepAliveSecs)
+	}
+	if muxKeepAlive.Max > 0 && muxKeepAlive.Min < 1 {
+		muxKeepAlive.Min = 1
+	}
+	muxKeepAliveBytes, err := ParseRange(opt.MuxKeepAliveBytes, "0")
+	if err != nil {
+		return nil, fmt.Errorf("xhttp mux-keep-alive-bytes: %w", err)
+	}
+	if muxKeepAliveBytes.Min < 0 {
+		return nil, fmt.Errorf("xhttp mux-keep-alive-bytes %q is negative", opt.MuxKeepAliveBytes)
+	}
+	if muxKeepAliveBytes.Max > maxMuxKeepAlivePadding {
+		muxKeepAliveBytes.Max = maxMuxKeepAlivePadding
+	}
+	if muxKeepAliveBytes.Min > muxKeepAliveBytes.Max {
+		muxKeepAliveBytes.Min = muxKeepAliveBytes.Max
+	}
 	return &requestHandler{
 		config:               opt.Config,
+		muxKeepAlive:         muxKeepAlive,
+		muxKeepAliveBytes:    muxKeepAliveBytes,
 		connHandler:          opt.ConnHandler,
 		httpHandler:          opt.HttpHandler,
 		xPaddingBytes:        xPaddingBytes,
@@ -457,7 +494,10 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			onClose: func() {
 				h.deleteSession(sessionId)
 			},
+			muxKeepAlive:      h.muxKeepAlive,
+			muxKeepAliveBytes: h.muxKeepAliveBytes,
 		}
+		conn.markWritten()
 		httputils.SetAddrFromRequest(&conn.NetAddr, r)
 
 		go h.connHandler(N.NewDeadlineConn(conn))
