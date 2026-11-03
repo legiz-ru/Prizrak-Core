@@ -68,8 +68,18 @@ func TestH2ClientBurstOpensOneConnection(t *testing.T) {
 	}{{0, 1}, {4, 4}} {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		assert.NoError(t, err)
+		// every request holds its stream until all 16 are in, so the
+		// connections needed do not depend on how fast the machine is
+		var arrived atomic.Int32
+		release := make(chan struct{})
 		srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(100 * time.Millisecond)
+			if arrived.Add(1) == 16 {
+				close(release)
+			}
+			select {
+			case <-release:
+			case <-time.After(3 * time.Second):
+			}
 			_, _ = w.Write([]byte("ok"))
 		})}
 		srv.Protocols = new(http.Protocols)

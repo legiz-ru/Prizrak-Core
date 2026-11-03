@@ -270,7 +270,35 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	}
 
 	proxy = outbound.NewAutoCloseProxyAdapter(proxy)
+
+	if err := decoder.Decode(mapping, &basicOption); err == nil {
+		udp443, err := resolveUdp443(basicOption.Udp443, basicOption.Quic)
+		if err != nil {
+			return nil, err
+		}
+		if udp443 == outbound.Udp443Reject {
+			proxy = outbound.NewUdp443(proxy, udp443)
+		}
+	}
 	return NewProxy(proxy), nil
+}
+
+// resolveUdp443 merges the udp-443 option with its `quic` alias.
+func resolveUdp443(udp443, quic string) (string, error) {
+	for _, v := range []string{udp443, quic} {
+		switch v {
+		case "", outbound.Udp443Allow, outbound.Udp443Reject:
+		default:
+			return "", fmt.Errorf("unsupport udp-443 value: %s", v)
+		}
+	}
+	if udp443 != "" && quic != "" && udp443 != quic {
+		return "", fmt.Errorf("conflicting udp-443 and quic values: %q != %q", udp443, quic)
+	}
+	if udp443 == "" {
+		return quic, nil
+	}
+	return udp443, nil
 }
 
 type proxyOption struct {
