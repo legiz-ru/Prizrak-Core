@@ -329,6 +329,14 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 				continue
 			}
 
+			// a member proxy rejected the flow on purpose (a udp-443/quic
+			// reject wrapper or a REJECT node): it is not a real dial of the
+			// node, so pass it through like a routing-level REJECT without
+			// pinning a winner, closing sibling flows or feeding stats
+			if lo.Contains(pc.Chains(), "REJECT") {
+				return pc, nil
+			}
+
 			if !keepPin {
 				s.adoptUnwrapWinner(metadata, proxy)
 			}
