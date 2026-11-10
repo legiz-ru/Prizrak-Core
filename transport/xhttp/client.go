@@ -232,14 +232,10 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 			return wrapped, nil
 		},
 		IdleConnTimeout: ConnIdleTimeout,
-		// For HTTP/2 this bounds only the connections being dialed at once:
-		// requests that start together wait for one dial and share its
-		// connection, instead of each opening its own while a TLS handshake
-		// is under way (XTLS/Xray-core#6797). A burst of handshakes is what
-		// censors look for, and it would get past reuse max-connections.
-		MaxConnsPerHost: 1,
-		Protocols:       protocols,
-		HTTP2:           http2Config,
+		// Requests that start together share one dial through CoalesceDials,
+		// which NewClient puts on this transport (XTLS/Xray-core#6797).
+		Protocols: protocols,
+		HTTP2:     http2Config,
 	}
 }
 
@@ -258,6 +254,9 @@ type Client struct {
 }
 
 func NewClient(cfg *Config, makeTransport TransportMaker, makeDownloadTransport TransportMaker, hasReality bool) (*Client, error) {
+	// Requests that start together on an HTTP/2 transport share one dial,
+	// so a burst of handshakes cannot get past reuse max-connections.
+	makeTransport, makeDownloadTransport = CoalesceDials(makeTransport), CoalesceDials(makeDownloadTransport)
 	mode := cfg.EffectiveMode(hasReality)
 	switch mode {
 	case "stream-one", "stream-up", "packet-up":

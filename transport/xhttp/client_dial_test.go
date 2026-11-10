@@ -9,9 +9,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/metacubex/mihomo/common/httputils"
+
 	"github.com/metacubex/http"
 	"github.com/stretchr/testify/assert"
 )
+
+// h2CoalescedTransport is the HTTP/2 transport as NewClient uses it, with
+// CoalesceDials on.
+func h2CoalescedTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc) http.RoundTripper {
+	return CoalesceDials(func() http.RoundTripper {
+		return NewTransport(dialRaw, wrapTLS, nil, nil, 0, nil)
+	})()
+}
 
 func h2TestRequests(tr http.RoundTripper, n int, timeout time.Duration) int32 {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -42,7 +52,7 @@ func h2TestRequests(tr http.RoundTripper, n int, timeout time.Duration) int32 {
 // (XTLS/Xray-core#6797) instead of opening a connection each.
 func TestH2ClientSharesOneDialWhileHandshakeHangs(t *testing.T) {
 	var dials atomic.Int32
-	tr := NewTransport(func(ctx context.Context) (net.Conn, error) {
+	tr := h2CoalescedTransport(func(ctx context.Context) (net.Conn, error) {
 		dials.Add(1)
 		a, b := net.Pipe()
 		go func() { _, _ = io.Copy(io.Discard, b) }()
@@ -51,7 +61,7 @@ func TestH2ClientSharesOneDialWhileHandshakeHangs(t *testing.T) {
 		<-ctx.Done() // the handshake never completes
 		_ = c.Close()
 		return nil, ctx.Err()
-	}, nil, nil, 0, nil)
+	})
 	defer closeTestTransport(tr)
 
 	assert.Zero(t, h2TestRequests(tr, 16, 500*time.Millisecond))
@@ -59,13 +69,16 @@ func TestH2ClientSharesOneDialWhileHandshakeHangs(t *testing.T) {
 }
 
 // Requests that start together on a fresh transport share one HTTP/2
-// connection; more are dialed, one at a time, only when the server's stream
-// limit is reached.
+// connection; more are dialed only when the server's stream limit is reached.
+// Those dials are coalesced too, but a request that retries while another one
+// has just taken the place of the leader may dial once more, so the stream
+// limit case allows a little over the four connections it needs (upstream's
+// TestCoalesceDialsStreamLimit allows more).
 func TestH2ClientBurstOpensOneConnection(t *testing.T) {
 	for _, tc := range []struct {
-		streams uint32
-		want    int32
-	}{{0, 1}, {4, 4}} {
+		streams  uint32
+		min, max int32
+	}{{0, 1, 1}, {4, 4, 6}} {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		assert.NoError(t, err)
 		// every request holds its stream until all 16 are in, so the
@@ -88,23 +101,22 @@ func TestH2ClientBurstOpensOneConnection(t *testing.T) {
 		go func() { _ = srv.Serve(ln) }()
 
 		var dials atomic.Int32
-		tr := NewTransport(func(ctx context.Context) (net.Conn, error) {
+		tr := h2CoalescedTransport(func(ctx context.Context) (net.Conn, error) {
 			dials.Add(1)
 			var d net.Dialer
 			return d.DialContext(ctx, "tcp", ln.Addr().String())
-		}, func(ctx context.Context, c net.Conn, isH2 bool) (net.Conn, error) { return c, nil }, nil, nil, 0, nil)
+		}, func(ctx context.Context, c net.Conn, isH2 bool) (net.Conn, error) { return c, nil })
 
 		assert.EqualValues(t, 16, h2TestRequests(tr, 16, 5*time.Second))
-		assert.EqualValues(t, tc.want, dials.Load(), "server stream limit %d", tc.streams)
+		got := dials.Load()
+		assert.True(t, got >= tc.min && got <= tc.max, "server stream limit %d: %d dials, want %d..%d", tc.streams, got, tc.min, tc.max)
 		closeTestTransport(tr)
 		_ = srv.Close()
 	}
 }
 
 func closeTestTransport(tr http.RoundTripper) {
-	if t, ok := tr.(*http.Transport); ok {
-		t.CloseIdleConnections()
-	}
+	httputils.CloseTransport(tr)
 }
 
 // A packet-up POST can be sent again: HTTP/2 replays it on a new connection
