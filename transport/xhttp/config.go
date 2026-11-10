@@ -576,7 +576,16 @@ func (c *Config) FillPacketRequest(request *http.Request, sessionId string, seqS
 		request.Body = io.NopCloser(bytes.NewReader(data))
 		request.ContentLength = int64(len(data))
 		// GetBody lets HTTP/2 send the packet again on a new connection
-		// when the server's GOAWAY retires the one it went out on.
+		// when the server's GOAWAY retires the one it went out on, and
+		// again when a server whose MAX_CONCURRENT_STREAMS is below the
+		// 100 streams the client opens before SETTINGS refuses the stream
+		// (REFUSED_STREAM): coalesced dials put a cold burst on one
+		// connection. Without it the POST fails, the error waits for a
+		// Write that never comes, and the session's GET hangs until its
+		// timeout. data is the writer's buffer, but GetBody is called only
+		// inside RoundTrip and flush holds writeMu until RoundTrip returns,
+		// so it needs no copy. stream-up and stream-one bodies are streams
+		// and cannot be rewound.
 		request.GetBody = func() (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(data)), nil
 		}
