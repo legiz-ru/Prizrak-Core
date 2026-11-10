@@ -4,11 +4,14 @@ import (
 	"encoding/base64"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/listener/inbound"
 	"github.com/metacubex/mihomo/transport/vless/encryption"
+	"github.com/metacubex/mihomo/transport/xdrive"
 	utls "github.com/metacubex/utls"
 	"github.com/stretchr/testify/assert"
 )
@@ -68,6 +71,87 @@ func testInboundVlessWithMuxCool(t *testing.T, inboundOptions inbound.VlessOptio
 	if runMuxCool {
 		testMuxCool(t, tunnel, out)
 	}
+}
+
+// The XDRIVE listener over a folder, with this core's client on the other side
+// of it. The server dials nothing: the folder is the only link between them.
+func TestInboundVless_XDrive(t *testing.T) {
+	t.Parallel()
+	privateKeyBase64, passwordBase64, _, err := encryption.GenX25519("")
+	if !assert.NoError(t, err) {
+		return
+	}
+	folder := homeTempDir(t)
+	options := xdrive.Options{Service: "local", RemoteFolder: folder}
+
+	inboundOptions := inbound.VlessOption{
+		BaseOption: inbound.BaseOption{NameStr: "vless_xdrive_inbound", Listen: "127.0.0.1", Port: "0"},
+		Users:      []inbound.VlessUser{{Username: "test", UUID: userUUID}},
+		Decryption: "mlkem768x25519plus.native.600s." + privateKeyBase64,
+	}
+	inboundOptions.XDriveConfig.Options = options
+	in, err := inbound.NewVless(&inboundOptions)
+	if !assert.NoError(t, err) {
+		return
+	}
+	tunnel := NewHttpTestTunnel()
+	defer tunnel.Close()
+	if !assert.NoError(t, in.Listen(tunnel)) {
+		return
+	}
+	defer in.Close()
+
+	outboundOptions := outbound.VlessOption{
+		Name:       "vless_xdrive_outbound",
+		Server:     "127.0.0.1",
+		Port:       443,
+		UUID:       userUUID,
+		Encryption: "mlkem768x25519plus.native.0rtt." + passwordBase64,
+		Network:    "xdrive",
+		XDriveOpts: options,
+	}
+	outboundOptions.DialerForAPI = tunnel.NewDialer()
+	outboundOptions.TunnelForAPI = tunnel
+	out, err := outbound.NewVless(outboundOptions)
+	if !assert.NoError(t, err) {
+		return
+	}
+	defer out.Close()
+
+	muxCool, err := outbound.NewMuxCool(outbound.MuxCoolOption{Enabled: true}, &notCloseProxyAdapter{out})
+	if !assert.NoError(t, err) {
+		return
+	}
+	defer muxCool.Close()
+	tunnel.DoTest(t, muxCool)
+}
+
+// A listener with service local keeps to the home directory and SAFE_PATHS
+// like every other file of the config.
+func TestInboundVless_XDriveUnsafeFolder(t *testing.T) {
+	privateKeyBase64, _, _, err := encryption.GenX25519("")
+	if !assert.NoError(t, err) {
+		return
+	}
+	inboundOptions := inbound.VlessOption{
+		BaseOption: inbound.BaseOption{NameStr: "vless_xdrive_unsafe", Listen: "127.0.0.1", Port: "0"},
+		Users:      []inbound.VlessUser{{Username: "test", UUID: userUUID}},
+		Decryption: "mlkem768x25519plus.native.600s." + privateKeyBase64,
+	}
+	folder := filepath.Join(os.TempDir(), "xdrive-unsafe")
+	inboundOptions.XDriveConfig.Options = xdrive.Options{Service: "local", RemoteFolder: folder}
+	in, err := inbound.NewVless(&inboundOptions)
+	if !assert.NoError(t, err) {
+		return
+	}
+	tunnel := NewHttpTestTunnel()
+	defer tunnel.Close()
+	if err := in.Listen(tunnel); err == nil {
+		_ = in.Close()
+		t.Fatal("the listener took a folder outside the safe paths")
+	}
+	_, statErr := os.Stat(folder)
+	assert.True(t, os.IsNotExist(statErr), "the folder was created")
 }
 
 func TestInboundVless_MuxCool(t *testing.T) {

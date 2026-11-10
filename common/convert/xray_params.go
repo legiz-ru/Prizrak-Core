@@ -3,6 +3,7 @@ package convert
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/transport/xdrive"
 )
 
 // The parameters beyond the share-link standard that the Remnawave backend
@@ -74,6 +76,10 @@ func finalMaskBlock(fm map[string]any, proxy map[string]any) map[string]any {
 func finalMaskUDPUsable(proxy map[string]any) bool {
 	if proxy["type"] == "vless" && proxy["network"] == "mkcp" {
 		return true
+	}
+	if proxy["type"] == "vless" && proxy["network"] == "xdrive" {
+		alpn, _ := proxy["alpn"].([]string)
+		return len(alpn) == 1 && alpn[0] == "h3"
 	}
 	if proxy["type"] != "vless" || proxy["network"] != "xhttp" {
 		return false
@@ -368,4 +374,133 @@ func mkcpOpts(kcp map[string]any, protocol string) (map[string]any, error) {
 		opts["seed"] = seed
 	}
 	return opts, nil
+}
+
+// xdriveOpts maps the xdriveSettings of an Xray outbound and its stream
+// address and port to xdrive-opts. Xray-core validates the rest when it
+// builds the config, so does the proxy here when it is parsed.
+func xdriveOpts(settings, stream map[string]any) (map[string]any, error) {
+	if settings == nil {
+		return nil, errors.New("xdrive without xdriveSettings")
+	}
+	service := mapString(settings, "service")
+	if service == "" {
+		return nil, errors.New("xdrive without service")
+	}
+	opts := map[string]any{"service": service}
+	if folder := mapString(settings, "remoteFolder"); folder != "" {
+		opts["remote-folder"] = folder
+	}
+	if secrets := stringList(settings["secrets"]); len(secrets) > 0 {
+		opts["secrets"] = secrets
+	}
+	for _, f := range [][2]string{
+		{"segmentBytes", "segment-bytes"},
+		{"flushIntervalMs", "flush-interval-ms"},
+		{"pollIntervalMs", "poll-interval-ms"},
+		{"maxPollIntervalMs", "max-poll-interval-ms"},
+		{"sessionTtlSeconds", "session-ttl-seconds"},
+		{"concurrency", "concurrency"},
+		{"eagerWindowMs", "eager-window-ms"},
+		{"holeTimeoutMs", "hole-timeout-ms"},
+	} {
+		if n := mapInt(settings, f[0]); n > 0 {
+			opts[f[1]] = n
+		}
+	}
+	switch template := settings["template"].(type) {
+	case map[string]any:
+		opts["template"] = xdrive.TemplateKeysFromJSON(template)
+	case string:
+		opts["template"] = template
+	}
+	if s3, ok := settings["s3"].(map[string]any); ok {
+		block := map[string]any{}
+		for _, key := range []string{"endpoint", "region", "bucket"} {
+			if value := mapString(s3, key); value != "" {
+				block[key] = value
+			}
+		}
+		if pathStyle, ok := s3["pathStyle"].(bool); ok {
+			block["path-style"] = pathStyle
+		}
+		opts["s3"] = block
+	}
+	if xmux, ok := settings["xmux"].(map[string]any); ok && len(xmux) > 0 {
+		reuse := map[string]any{}
+		for _, f := range [][2]string{
+			{"maxConcurrency", "max-concurrency"},
+			{"maxConnections", "max-connections"},
+			{"cMaxReuseTimes", "c-max-reuse-times"},
+			{"hMaxRequestTimes", "h-max-request-times"},
+			{"hMaxReusableSecs", "h-max-reusable-secs"},
+		} {
+			switch v := xmux[f[0]].(type) {
+			case string:
+				if v != "" {
+					reuse[f[1]] = v
+				}
+			case float64:
+				if v > 0 {
+					reuse[f[1]] = strconv.Itoa(int(v))
+				}
+			}
+		}
+		if v, ok := xmux["hKeepAlivePeriod"].(float64); ok && v != 0 {
+			reuse["h-keep-alive-period"] = int(v)
+		}
+		if len(reuse) > 0 {
+			opts["reuse-settings"] = reuse
+		}
+	}
+	if address := mapString(stream, "address"); address != "" {
+		opts["address"] = address
+	}
+	if port := mapInt(stream, "port"); port > 0 {
+		opts["port"] = port
+	}
+	return opts, nil
+}
+
+// xdriveMux maps the mux of an Xray outbound to the mux.cool block. Xray-core
+// refuses xdrive without mux, and so does the proxy parser.
+func xdriveMux(mux map[string]any) (map[string]any, error) {
+	if enabled, _ := mux["enabled"].(bool); !enabled {
+		return nil, errors.New("xdrive needs mux enabled")
+	}
+	block := map[string]any{"enabled": true}
+	if concurrency := mapInt(mux, "concurrency"); concurrency > 0 {
+		block["max-concurrency"] = concurrency
+	}
+	if xudp := mapInt(mux, "xudpConcurrency"); xudp > 0 {
+		block["xudp-concurrency"] = xudp
+	}
+	if udp443 := mapString(mux, "xudpProxyUDP443"); udp443 != "" {
+		block["xudp-proxy-udp443"] = udp443
+	}
+	return block, nil
+}
+
+// xdriveLinkOpts reads a vless share link with type=xdrive: service and
+// remoteFolder as parameters, secrets comma-separated, the rest in extra as
+// the JSON of xdriveSettings. Xray-core has no share link for the transport.
+func xdriveLinkOpts(query url.Values, scheme string) (map[string]any, error) {
+	if scheme != "vless" {
+		return nil, fmt.Errorf("%s over xdrive is not supported, only vless", scheme)
+	}
+	settings := map[string]any{}
+	if extra := query.Get("extra"); extra != "" {
+		if err := json.Unmarshal([]byte(extra), &settings); err != nil {
+			return nil, fmt.Errorf("invalid xdrive extra: %w", err)
+		}
+	}
+	for _, key := range []string{"service", "remoteFolder"} {
+		if value := query.Get(key); value != "" {
+			settings[key] = value
+		}
+	}
+	if secrets := query.Get("secrets"); secrets != "" {
+		settings["secrets"] = secrets
+	}
+	return xdriveOpts(settings, nil)
 }

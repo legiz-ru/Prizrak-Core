@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/finalmask"
@@ -122,11 +123,29 @@ func checkFinalMaskNetwork(fm *finalmask.FinalMask, proxyType, network string, a
 	if proxyType == "vless" && (network == "mkcp" || network == "kcp") {
 		return nil
 	}
+	if proxyType == "vless" && network == "xdrive" && len(alpn) == 1 && alpn[0] == "h3" {
+		return nil
+	}
 	if proxyType != "vless" || network != "xhttp" {
 		return fmt.Errorf("finalmask.udp is used by mkcp and by xhttp over HTTP/3 only (type: vless, network: mkcp or network: xhttp with alpn: [h3]), not by %s over %s", proxyType, defaultNetwork(network))
 	}
 	if len(alpn) != 1 || alpn[0] != "h3" {
 		return errors.New("finalmask.udp is used by mkcp and by xhttp over HTTP/3 only, set alpn: [h3]")
+	}
+	return nil
+}
+
+// checkXDriveH3Masks is the check Xray-core makes for xdrive to Google Drive
+// over HTTP/3, where only noise masks can work.
+func checkXDriveH3Masks(option *FinalMaskOption) error {
+	if option == nil {
+		return nil
+	}
+	for _, mask := range option.UDP {
+		maskType, _ := mask["type"].(string)
+		if !strings.EqualFold(maskType, "noise") {
+			return fmt.Errorf(`xdrive over h3 to Google Drive only works with the "noise" udp mask, not %q`, maskType)
+		}
 	}
 	return nil
 }

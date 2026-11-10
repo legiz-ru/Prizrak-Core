@@ -706,3 +706,22 @@ func waitFor(t *testing.T, condition func() bool) {
 		t.Fatal("condition was not satisfied before timeout")
 	}
 }
+
+func TestPoolSessionOutlivesDialContext(t *testing.T) {
+	dialer := &fakeCarrierDialer{}
+	pool := NewPool(dialer.dial, testPoolOptions())
+	t.Cleanup(func() { _ = pool.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	conn, err := pool.DialContext(ctx, "one.example", 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	if _, err := conn.Write([]byte("still open")); err != nil {
+		t.Fatalf("write after the dial context ended: %v", err)
+	}
+}

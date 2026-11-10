@@ -1,6 +1,7 @@
 package muxcool
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -610,5 +611,69 @@ func TestServerRuntimeCloseDrainsCarriers(t *testing.T) {
 	_ = client.Close()
 	if err := runtime.Serve(context.Background(), client, testCarrierMetadata(), handler); !errors.Is(err, ErrServerClosed) {
 		t.Fatalf("Serve after Close = %v, want ErrServerClosed", err)
+	}
+}
+
+func TestServerRuntimeStreamBackpressure(t *testing.T) {
+	runtime := NewServerRuntime(ServerOptions{XUDPIdleTimeout: time.Hour})
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	const frames = 3 * serverStreamQueueSize
+	release := make(chan struct{})
+	received := make(chan int, 1)
+	handler := testServerHandler{
+		tcp: func(_ context.Context, conn net.Conn, _ M.Metadata) error {
+			<-release
+			total := 0
+			payload := make([]byte, MaxPayloadSize)
+			for total < frames*MaxPayloadSize {
+				n, err := conn.Read(payload)
+				if err != nil {
+					received <- total
+					return err
+				}
+				total += n
+			}
+			received <- total
+			return nil
+		},
+		udp: func(context.Context, N.PacketConn, M.Metadata) error { return errors.New("unexpected UDP") },
+	}
+	carrier := serveTestCarrier(t, runtime, handler)
+
+	writeFailed := make(chan error, 1)
+	go func() {
+		// The first frame opens the session; a target that does not read holds
+		// the rest back instead of losing them.
+		payload := bytes.Repeat([]byte{7}, MaxPayloadSize)
+		for i := 0; i < frames; i++ {
+			frame := Frame{SessionID: 9, Status: StatusKeep, Option: OptionData, Payload: payload}
+			if i == 0 {
+				frame = Frame{SessionID: 9, Status: StatusNew, Option: OptionData, Network: NetworkTCP, Destination: "big.example", Port: 443, Payload: payload}
+			}
+			raw, err := EncodeFrame(frame)
+			if err == nil {
+				_, err = carrier.Write(raw)
+			}
+			if err != nil {
+				writeFailed <- err
+				return
+			}
+		}
+		writeFailed <- nil
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	select {
+	case total := <-received:
+		if total != frames*MaxPayloadSize {
+			t.Fatalf("target read %d bytes, want %d", total, frames*MaxPayloadSize)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("target did not get the frames")
+	}
+	if err := <-writeFailed; err != nil {
+		t.Fatal(err)
 	}
 }

@@ -36,6 +36,7 @@ type xrayOutbound struct {
 	Protocol       string         `json:"protocol"`
 	Settings       map[string]any `json:"settings"`
 	StreamSettings map[string]any `json:"streamSettings"`
+	Mux            map[string]any `json:"mux"`
 }
 
 // IsXrayJSON reports whether the data is an Xray JSON subscription: a JSON
@@ -213,6 +214,13 @@ func convertXrayOutbound(outbound xrayOutbound, name string, names map[string]in
 	xrayTLS(proxy, stream, protocol)
 	if err := xrayTransport(proxy, stream, protocol); err != nil {
 		return nil, err
+	}
+	if proxy["network"] == "xdrive" {
+		mux, err := xdriveMux(outbound.Mux)
+		if err != nil {
+			return nil, err
+		}
+		proxy["mux.cool"] = mux
 	}
 	if protocol == "vless" || protocol == "trojan" {
 		if fm, ok := stream["finalmask"].(map[string]any); ok {
@@ -525,6 +533,17 @@ func xrayTransport(proxy, stream map[string]any, protocol string) error {
 		}
 		proxy["network"] = "xhttp"
 		proxy["xhttp-opts"] = xhttpOpts
+	case "xdrive":
+		if protocol != "vless" {
+			return fmt.Errorf("%s over xdrive is not supported, only vless", protocol)
+		}
+		xdrive, _ := stream["xdriveSettings"].(map[string]any)
+		opts, err := xdriveOpts(xdrive, stream)
+		if err != nil {
+			return err
+		}
+		proxy["network"] = "xdrive"
+		proxy["xdrive-opts"] = opts
 	case "kcp", "mkcp":
 		if protocol != "vless" && protocol != "vmess" {
 			return fmt.Errorf("%s over mkcp is not supported", protocol)

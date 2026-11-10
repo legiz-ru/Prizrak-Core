@@ -30,6 +30,12 @@ type Options struct {
 	FirstPayloadTimeout time.Duration
 	IdleTimeout         time.Duration
 	AfterFunc           func(time.Duration, func()) Timer
+	// CarrierDialTimeout, when set, is how long a carrier may take to dial,
+	// whatever the deadline of the caller that needs it: a call waits for
+	// the carrier until then, and only its cancellation or the pool's Close
+	// stops it earlier. For carriers slower to set up than a dial timeout
+	// allows, as xdrive sessions are.
+	CarrierDialTimeout time.Duration
 }
 
 type Pool struct {
@@ -102,6 +108,11 @@ func (p *Pool) openContext(
 	globalID [8]byte,
 	packet bool,
 ) (openedSession, error) {
+	if p.options.CarrierDialTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = WithoutDeadline(ctx, p.options.CarrierDialTimeout)
+		defer cancel()
+	}
 	for {
 		if err := context.Cause(ctx); err != nil {
 			return openedSession{}, err
@@ -113,7 +124,7 @@ func (p *Pool) openContext(
 		}
 
 		for _, worker := range p.workers {
-			conn, err := openWorkerSession(worker, ctx, destination, port, globalID, packet, p.options.FirstPayloadTimeout)
+			conn, err := openWorkerSession(worker, destination, port, globalID, packet, p.options.FirstPayloadTimeout)
 			if err != nil {
 				continue
 			}
@@ -197,7 +208,7 @@ func (p *Pool) openContext(
 			worker.onAvailable = p.signalAvailable
 		}
 		p.workers = append(p.workers, worker)
-		conn, err := openWorkerSession(worker, ctx, destination, port, globalID, packet, p.options.FirstPayloadTimeout)
+		conn, err := openWorkerSession(worker, destination, port, globalID, packet, p.options.FirstPayloadTimeout)
 		if err == nil {
 			p.mu.Unlock()
 			return conn, nil
@@ -223,7 +234,6 @@ func (p *Pool) signalChangedLocked() {
 
 func openWorkerSession(
 	worker *carrierWorker,
-	ctx context.Context,
 	destination string,
 	port uint16,
 	globalID [8]byte,
@@ -234,7 +244,9 @@ func openWorkerSession(
 		connection, err := worker.openPacketSession(destination, port, globalID)
 		return openedSession{packet: connection}, err
 	}
-	connection, err := worker.openSession(ctx, destination, port, firstPayloadTimeout)
+	// The session outlives the dial it was opened by: ctx only bounds the wait
+	// for a carrier, and after that the caller owns the connection.
+	connection, err := worker.openSession(context.Background(), destination, port, firstPayloadTimeout)
 	return openedSession{stream: connection}, err
 }
 
@@ -329,4 +341,30 @@ func (p *Pool) Close() error {
 		}
 	})
 	return nil
+}
+
+// valuesOnly is a context with the values of another and none of its
+// deadline or cancellation.
+type valuesOnly struct{ context.Context }
+
+func (valuesOnly) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (valuesOnly) Done() <-chan struct{}       { return nil }
+func (valuesOnly) Err() error                  { return nil }
+
+// WithoutDeadline returns a context with the values of parent that ends after
+// timeout, or when parent is canceled for any reason but its deadline.
+func WithoutDeadline(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(valuesOnly{parent}, timeout)
+	if parent.Done() != nil {
+		go func() {
+			select {
+			case <-parent.Done():
+				if !errors.Is(parent.Err(), context.DeadlineExceeded) {
+					cancel()
+				}
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return ctx, cancel
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
@@ -80,12 +81,22 @@ func NewMuxCool(option MuxCoolOption, proxy ProxyAdapter) (ProxyAdapter, error) 
 	return wrapper, nil
 }
 
+// carrierDialTimeouter is a proxy whose carriers take longer to dial than the
+// dial timeout of a connection, a VLESS proxy over xdrive.
+type carrierDialTimeouter interface {
+	carrierDialTimeout() time.Duration
+}
+
 func (x *MuxCool) newPool(maxConcurrency int, limiter *muxcool.CarrierLimiter) *muxcool.Pool {
-	return muxcool.NewPool(x.dialCarrier, muxcool.Options{
+	options := muxcool.Options{
 		MaxConcurrency: maxConcurrency,
 		MaxConnections: x.option.MaxConnections,
 		CarrierLimiter: limiter,
-	})
+	}
+	if slow, ok := x.ProxyAdapter.(carrierDialTimeouter); ok {
+		options.CarrierDialTimeout = slow.carrierDialTimeout()
+	}
+	return muxcool.NewPool(x.dialCarrier, options)
 }
 
 func (x *MuxCool) Options() MuxCoolOption {

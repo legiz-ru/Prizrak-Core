@@ -22,12 +22,15 @@ import (
 const (
 	defaultXUDPIdleTimeout       = time.Minute
 	defaultMaxSessionsPerCarrier = 1024
+	// defaultStreamIdleTimeout is connIdle of the default policy of Xray-core.
+	defaultStreamIdleTimeout = 300 * time.Second
 )
 
 var (
 	ErrServerClosed       = errors.New("mux.cool server is closed")
 	ErrDuplicateSessionID = errors.New("mux.cool duplicate session ID")
 	ErrSessionQueueFull   = errors.New("mux.cool session receive queue is full")
+	ErrStreamStalled      = errors.New("mux.cool stream target stopped reading")
 )
 
 type ServerHandler interface {
@@ -43,6 +46,12 @@ type ServerOptions struct {
 	XUDPIdleTimeout       time.Duration
 	MaxSessionsPerCarrier int
 	AfterFunc             func(time.Duration, func()) ServerTimer
+	// StreamIdleTimeout bounds how long the carrier waits to hand data to a
+	// stream whose target reads nothing, like connIdle of Xray-core: until
+	// then the carrier reads no other frame, and after it the stream ends
+	// with an error so the other streams, End frames and the client's close
+	// go through again.
+	StreamIdleTimeout time.Duration
 }
 
 type ServerRuntime struct {
@@ -62,6 +71,9 @@ func NewServerRuntime(options ServerOptions) *ServerRuntime {
 	}
 	if options.MaxSessionsPerCarrier <= 0 {
 		options.MaxSessionsPerCarrier = defaultMaxSessionsPerCarrier
+	}
+	if options.StreamIdleTimeout <= 0 {
+		options.StreamIdleTimeout = defaultStreamIdleTimeout
 	}
 	if options.AfterFunc == nil {
 		options.AfterFunc = func(duration time.Duration, callback func()) ServerTimer {

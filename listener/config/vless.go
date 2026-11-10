@@ -6,6 +6,7 @@ import (
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/transport/finalmask/option"
+	"github.com/metacubex/mihomo/transport/xdrive"
 	"github.com/metacubex/mihomo/transport/xhttp"
 )
 
@@ -22,6 +23,7 @@ type VlessServer struct {
 	Decryption      string
 	WsPath          string
 	XHTTPConfig     XHTTPConfig
+	XDriveConfig    XDriveConfig
 	GrpcServiceName string
 	Certificate     string
 	PrivateKey      string
@@ -35,6 +37,17 @@ type VlessServer struct {
 	RealityConfig   reality.Config `yaml:"reality-config" json:"reality-config,omitempty"`
 	MuxOption       sing.MuxOption `yaml:"mux-option" json:"mux-option,omitempty"`
 	FinalMask       option.Option  `yaml:"finalmask" json:"finalmask,omitempty"`
+}
+
+// XDriveConfig is the xdrive-config of a vless listener: the options of the
+// transport and the TLS of its requests to the storage service.
+type XDriveConfig struct {
+	xdrive.Options
+	ServerName        string
+	ALPN              []string
+	ClientFingerprint string
+	SkipCertVerify    bool
+	Fingerprint       string
 }
 
 type XHTTPConfig struct {

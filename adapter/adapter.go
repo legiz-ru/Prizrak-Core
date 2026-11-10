@@ -195,6 +195,9 @@ func (p *Proxy) MarshalJSON() ([]byte, error) {
 // there in time fails the test. With the profile's connectivity set, a
 // failure while the device itself is offline is not recorded.
 func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
+	// marked, so that a proxy can tell the test from traffic: xdrive keeps
+	// its spare sessions warm for traffic only
+	ctx = C.WithHealthCheck(ctx)
 	var satisfied bool
 	profile := pingconfig.Lookup(url)
 

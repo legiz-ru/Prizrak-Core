@@ -13,6 +13,7 @@ import (
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/pingconfig"
+	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -350,4 +351,41 @@ func TestURLTestSamplingWindow(t *testing.T) {
 	}
 	assert.Len(t, p.DelayHistoryForTestUrl(url), 10, "10 is more than 2×3+1")
 	assert.False(t, p.AliveForTestUrl(url), "no success left in the history")
+}
+
+// healthCheckProbe is a direct proxy that records whether its dials are
+// marked as health checks.
+type healthCheckProbe struct {
+	C.ProxyAdapter
+	marked []bool
+}
+
+func (h *healthCheckProbe) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+	h.marked = append(h.marked, C.IsHealthCheck(ctx))
+	return h.ProxyAdapter.DialContext(ctx, metadata)
+}
+
+// The dials of a delay test carry the health check mark, those of the
+// destination included.
+func TestURLTestMarksItsDialsAsHealthChecks(t *testing.T) {
+	useUnifiedDelay(t, false)
+	s := newSite(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Connection", "close")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
+	url := s.URL + "/generate_204"
+	usePing(t, profile(url, url, pingconfig.MethodGET))
+	probe := &healthCheckProbe{ProxyAdapter: outbound.NewDirect()}
+	p := NewProxy(probe)
+
+	_, err := urlTest(p, url)
+	require.NoError(t, err)
+	require.Len(t, probe.marked, 2)
+	for i, marked := range probe.marked {
+		assert.True(t, marked, "dial %d", i)
+	}
 }

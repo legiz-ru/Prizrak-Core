@@ -21,12 +21,14 @@ import (
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/jls"
 	"github.com/metacubex/mihomo/transport/mkcp"
+	"github.com/metacubex/mihomo/transport/muxcool"
 	"github.com/metacubex/mihomo/transport/restls"
 	"github.com/metacubex/mihomo/transport/shadowtls"
 	"github.com/metacubex/mihomo/transport/tuic/common"
 	"github.com/metacubex/mihomo/transport/vless"
 	"github.com/metacubex/mihomo/transport/vless/encryption"
 	"github.com/metacubex/mihomo/transport/vmess"
+	"github.com/metacubex/mihomo/transport/xdrive"
 	"github.com/metacubex/mihomo/transport/xhttp"
 
 	"github.com/metacubex/http"
@@ -58,6 +60,7 @@ type Vless struct {
 	restlsConfig    *restls.Config
 	jlsConfig       *jls.Config
 	realityConfig   *tlsC.RealityConfig
+	xdriveClient    *xdrive.Client
 }
 
 type VlessOption struct {
@@ -86,6 +89,7 @@ type VlessOption struct {
 	WSOpts            WSOptions         `proxy:"ws-opts,omitempty"`
 	XHTTPOpts         XHTTPOptions      `proxy:"xhttp-opts,omitempty"`
 	MKCPOpts          MKCPOptions       `proxy:"mkcp-opts,omitempty"`
+	XDriveOpts        xdrive.Options    `proxy:"xdrive-opts,omitempty"`
 	FinalMask         *FinalMaskOption  `proxy:"finalmask,omitempty"`
 	WSHeaders         map[string]string `proxy:"ws-headers,omitempty"`
 	SkipCertVerify    bool              `proxy:"skip-cert-verify,omitempty"`
@@ -279,6 +283,8 @@ func (v *Vless) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.M
 		break // already handle in dialContext
 	case "xhttp":
 		break // already handle in dialContext
+	case "xdrive":
+		break // already handle in dialContext, TLS is for the storage service
 	default:
 		// default tcp network
 		// handle TLS
@@ -369,9 +375,81 @@ func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 		return v.xhttpClient.Dial(ctx)
 	case "mkcp", "kcp":
 		return v.dialMKCP(ctx)
+	case "xdrive":
+		return v.xdriveClient.Dial(ctx)
 	default:
 	}
 	return v.dialTCP(ctx, v.addr)
+}
+
+// xdriveDialTimeout bounds the start of a session of the xdrive transport,
+// instead of the dial timeout of a TCP connection.
+const xdriveDialTimeout = 60 * time.Second
+
+// carrierDialTimeout is how long mux.cool over this proxy waits for a
+// carrier: an xdrive session takes longer to start than a dial timeout.
+func (v *Vless) carrierDialTimeout() time.Duration {
+	if v.xdriveClient != nil {
+		return xdriveDialTimeout
+	}
+	return 0
+}
+
+// xdriveDialer gives the transport the proxy's way to the storage service:
+// this proxy's dialer and finalmask, and its TLS settings with the service's
+// host as the SNI unless servername is set. As in Xray-core the settings are
+// for the service, so the service is reached over TLS for https URLs even
+// without tls: true.
+func (v *Vless) xdriveDialer() *xdrive.Dialer {
+	return &xdrive.Dialer{
+		Address: v.option.XDriveOpts.Address,
+		Port:    v.option.XDriveOpts.Port,
+		DialTCP: v.dialTCP,
+		WrapTLS: func(ctx context.Context, raw net.Conn, host string) (net.Conn, error) {
+			tlsOpts := v.xdriveTLSConfig(host)
+			tlsOpts.NextProtos = v.option.ALPN
+			if len(tlsOpts.NextProtos) == 0 {
+				tlsOpts.NextProtos = []string{"h2", "http/1.1"}
+			}
+			return vmess.StreamTLSConn(ctx, raw, tlsOpts)
+		},
+		H3: len(v.option.ALPN) == 1 && v.option.ALPN[0] == "h3",
+		DialQUIC: func(ctx context.Context, addr, host string, cfg *quic.Config) (*quic.Conn, error) {
+			tlsOpts := v.xdriveTLSConfig(host)
+			tlsOpts.NextProtos = []string{"h3"}
+			tlsConfig, err := tlsOpts.ToStdConfig()
+			if err != nil {
+				return nil, err
+			}
+			if err := v.echConfig.ClientHandle(ctx, tlsConfig); err != nil {
+				return nil, err
+			}
+			return v.dialQUIC(ctx, addr, tlsConfig, cfg)
+		},
+	}
+}
+
+// xdriveTLSConfig is the TLS of the requests to host. A hello of chrome is the
+// default of Xray-core when no fingerprint is set.
+func (v *Vless) xdriveTLSConfig(host string) *vmess.TLSConfig {
+	serverName := v.option.ServerName
+	if serverName == "" {
+		serverName = host
+	}
+	clientFingerprint := v.option.ClientFingerprint
+	if clientFingerprint == "" {
+		clientFingerprint = "chrome"
+	}
+	return &vmess.TLSConfig{
+		Host:              serverName,
+		SkipCertVerify:    v.option.SkipCertVerify,
+		NameCertVerify:    v.option.NameCertVerify,
+		FingerPrint:       v.option.Fingerprint,
+		Certificate:       v.option.Certificate,
+		PrivateKey:        v.option.PrivateKey,
+		ClientFingerprint: clientFingerprint,
+		ECH:               v.echConfig,
+	}
 }
 
 // dialMKCP opens an mKCP connection as Xray-core does since finalmask: the
@@ -428,6 +506,14 @@ func (v *Vless) dialQUIC(ctx context.Context, addr string, tlsConfig *tls.Config
 
 // DialContext implements C.ProxyAdapter
 func (v *Vless) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
+	if v.xdriveClient != nil {
+		// A session starts with objects to create on the storage and the VLESS
+		// Encryption handshake through it, longer than a dial timeout allows;
+		// a cancellation, as when mux.cool closes, still ends it.
+		var cancel context.CancelFunc
+		ctx, cancel = muxcool.WithoutDeadline(ctx, xdriveDialTimeout)
+		defer cancel()
+	}
 	c, err := v.dialContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%s connect error: %s", v.addr, err.Error())
@@ -503,6 +589,11 @@ func (v *Vless) Close() error {
 	}
 	if v.xhttpClient != nil {
 		if err := v.xhttpClient.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if v.xdriveClient != nil {
+		if err := v.xdriveClient.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -656,6 +747,42 @@ func NewVless(option VlessOption) (*Vless, error) {
 		if option.MKCPOpts.Seed != "" || option.MKCPOpts.Header != "" {
 			return nil, errors.New("vless over mkcp has no mkcp-opts seed and header: Xray-core replaced them with finalmask udp masks (header-*, mkcp-aes128gcm)")
 		}
+	}
+
+	if option.Network == "xdrive" {
+		if securityMode != "" {
+			return nil, fmt.Errorf("xdrive does not support %s, its TLS is for the storage service", securityMode)
+		}
+		// As Xray-core refuses it: the encryption is what keeps the storage
+		// provider out of the traffic, and flow has nothing to pad.
+		if option.Flow != "" {
+			return nil, errors.New(`xdrive does not support flow`)
+		}
+		if option.Encryption == "" || option.Encryption == "none" {
+			return nil, errors.New(`xdrive needs vless encryption, run "xray vlessenc" to get one`)
+		}
+		h3 := len(option.ALPN) == 1 && option.ALPN[0] == "h3"
+		config, err := option.XDriveOpts.Build(h3)
+		if err != nil {
+			return nil, err
+		}
+		if config.Service == "local" && config.RemoteFolder != "" {
+			// the folder comes from a subscription as easily as from the
+			// config, so it is held to the paths every other file is
+			folder := C.Path.Resolve(config.RemoteFolder)
+			if !C.Path.IsSafePath(folder) {
+				return nil, C.Path.ErrNotSafePath(folder)
+			}
+			config.RemoteFolder = folder
+		}
+		if h3 && v.finalMask.HasUDP() && config.Service == "google-drive" {
+			// noise only sends datagrams of its own ahead of the QUIC ones, the
+			// other masks change those or need a peer that undoes them
+			if err := checkXDriveH3Masks(option.FinalMask); err != nil {
+				return nil, err
+			}
+		}
+		v.xdriveClient = xdrive.NewClient(config, v.xdriveDialer())
 	}
 
 	switch option.Network {

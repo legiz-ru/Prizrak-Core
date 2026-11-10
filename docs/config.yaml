@@ -1143,6 +1143,59 @@ proxies: # socks5
       #   servername: xxx.com
       #   client-fingerprint: chrome
 
+  # vless over XDRIVE (Xray-core v26.11.9): the session is carried as objects on a storage
+  # service, so the proxy's traffic is only HTTP(S) to that service.
+  # vless over XDRIVE：会话以对象形式保存在存储服务上，代理流量只有发往该服务的 HTTP(S)。
+  # server/port are required by the format and unused by the transport; the TLS options
+  # (tls, servername, alpn, client-fingerprint, skip-cert-verify, fingerprint, ech-opts) are
+  # those of the requests to the service: https URLs always use TLS, SNI defaults to the
+  # URL host, fingerprint to chrome.
+  # server/port 为格式必需字段，传输层不使用；TLS 选项用于对存储服务的请求。
+  - name: "vless-xdrive"
+    type: vless
+    server: www.google.com
+    port: 443
+    uuid: uuid
+    encryption: "mlkem768x25519plus.native.0rtt...."  # required: `xray vlessenc`; no flow / 必需，不支持 flow
+    network: xdrive
+    tls: true
+    alpn: [h2]
+    servername: www.google.com
+    client-fingerprint: chrome
+    udp: true
+    mux.cool:                 # required, as in Xray / 必需，同 Xray；max-concurrency below 128 is raised to 128, max-connections below 1024 to 1024
+      enabled: true
+    xdrive-opts:
+      service: google-drive   # google-drive | template | s3 | local
+      remote-folder: "folder id" # a Drive folder id (google-drive), a folder path under the home directory or SAFE_PATHS (local), a key prefix (s3), {folder} (template)
+      secrets: ["client-id", "client-secret", "refresh-token"]  # google-drive: these three; s3: access key, secret key, optional token; template: {secret0}.. in the template
+      # segment-bytes: 524288          # the maximum object size / 单个对象最大字节数
+      # flush-interval-ms: 20          # 10 on google-drive / google-drive 默认 10
+      # poll-interval-ms: 50
+      # max-poll-interval-ms: 500      # 200 on google-drive
+      # session-ttl-seconds: 300
+      # concurrency: 8                 # 64 on google-drive
+      # eager-window-ms: 2000
+      # hole-timeout-ms: 30000
+      # address: ""                    # where to connect instead of the host of the URL (Xray's streamSettings.address)
+      # port: 0
+      # reuse-settings:                # XMUX of the connections to the service, as in xhttp-opts; default max-connections 1 (4 for google-drive over h2), h-max-reusable-secs 1800-3000
+      #   max-connections: "4"
+      # s3:                            # service: s3
+      #   endpoint: "https://s3.example.com"
+      #   region: us-east-1
+      #   bucket: my-bucket
+      #   path-style: true
+      # template:                      # service: template, or a string with Xray's JSON
+      #   flatten: false
+      #   concurrency: 8
+      #   auth: {type: basic, username: "{secret0}", password: "{secret1}"}  # none | static (header) | basic (username, password) | oauth2 (token-url, form, token-path, expiry-path, header with {token})
+      #   put: {method: PUT, url: "https://dav.example.com/{folder}/{name}"}
+      #   get: {method: GET, url: "https://dav.example.com/{folder}/{name}"}
+      #   delete: {method: DELETE, url: "https://dav.example.com/{folder}/{name}"}
+      #   list: {method: PROPFIND, url: "https://dav.example.com/{folder}/{prefix}", names-regex: "<href>[^<]*/([^/<]+)</href>"}  # one capture group per name, also href-path/href-method for two-step operations
+      #   retry: {status: [429, 503], rate-reason: "error.message"}
+
   # finalmask: 移植自 Xray-core (Jolymmiles 分支) 的 finalmask，仅 vless 与 trojan 支持
   # finalmask: the finalmask layer of Xray-core (the Jolymmiles fork), for vless and trojan only
   # tcp 掩码包在 TLS/REALITY 之下、TCP 套接字之上，所有 network 都生效 (tcp/ws/grpc/h2/http/xhttp)
@@ -2642,6 +2695,15 @@ listeners:
         flow: xtls-rprx-vision
     # ws-path: "/" # 如果不为空则开启 websocket 传输层
     # grpc-service-name: "GunService" # 如果不为空则开启 grpc 传输层
+    # decryption: "mlkem768x25519plus.native.600s.key"  # xdrive-config 必需 / required by xdrive-config
+    # xdrive-config: # 如果不为空则开启 XDRIVE 传输层：会话来自存储服务，不监听 TCP（listen/port 仅占位）
+    #                # XDRIVE: sessions come from the storage service, nothing listens (listen/port are only names)
+    #   service: google-drive # google-drive | template | s3 | local，其余字段同 proxies 的 xdrive-opts / the same fields as a proxy's xdrive-opts
+    #   remote-folder: "folder id"
+    #   secrets: ["client-id", "client-secret", "refresh-token"]
+    #   servername: www.google.com     # requests' SNI, default the URL's host
+    #   alpn: [h2]
+    #   client-fingerprint: chrome
     # xhttp-config: # 如果不为空则开启 xhttp 传输层
     #   path: "/"
     #   host: ""

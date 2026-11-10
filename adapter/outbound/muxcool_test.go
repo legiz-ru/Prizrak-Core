@@ -501,7 +501,9 @@ func TestMuxCoolServerFirstNewFrame(t *testing.T) {
 	}
 }
 
-func TestMuxCoolContextCancellationClosesOnlyLogicalSession(t *testing.T) {
+// A connection that DialContext returned no longer depends on its context, as
+// with net.Dialer: the tunnel's dial context times out seconds after the dial.
+func TestMuxCoolDialContextDoesNotOwnSession(t *testing.T) {
 	base := newFakeMuxCoolAdapter()
 	wrapped, err := NewMuxCool(MuxCoolOption{Enabled: true}, base)
 	if err != nil {
@@ -522,28 +524,24 @@ func TestMuxCoolContextCancellationClosesOnlyLogicalSession(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 
 	cancel()
-	end, err := muxcool.DecodeFrame(server)
-	if err != nil {
-		t.Fatalf("decode cancelled End: %v", err)
-	}
-	if end.SessionID != 1 || end.Status != muxcool.StatusEnd {
-		t.Fatalf("cancel frame = %+v", end)
-	}
-	if _, err := first.Read(make([]byte, 1)); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled read error = %v", err)
-	}
+	time.Sleep(20 * time.Millisecond)
 
-	response, err := muxcool.EncodeFrame(muxcool.Frame{SessionID: 2, Status: muxcool.StatusKeep, Option: muxcool.OptionData, Payload: []byte("ok")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _, _ = server.Write(response) }()
-	got := make([]byte, 2)
-	if _, err := second.Read(got); err != nil {
-		t.Fatalf("surviving session read: %v", err)
-	}
-	if string(got) != "ok" {
-		t.Fatalf("surviving response = %q", got)
+	for _, session := range []struct {
+		id   uint16
+		conn net.Conn
+	}{{1, first}, {2, second}} {
+		response, err := muxcool.EncodeFrame(muxcool.Frame{SessionID: session.id, Status: muxcool.StatusKeep, Option: muxcool.OptionData, Payload: []byte("ok")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { _, _ = server.Write(response) }()
+		got := make([]byte, 2)
+		if _, err := session.conn.Read(got); err != nil {
+			t.Fatalf("session %d read after the dial context ended: %v", session.id, err)
+		}
+		if string(got) != "ok" {
+			t.Fatalf("session %d response = %q", session.id, got)
+		}
 	}
 }
 

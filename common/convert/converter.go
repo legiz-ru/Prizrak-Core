@@ -243,7 +243,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			vless := make(map[string]any, 20)
 			err = handleVShareLink(names, urlVLess, scheme, vless)
 			if err != nil {
-				log.Warnln("error:%s line:%s", err.Error(), line)
+				log.Warnln("error:%s line:%s", err.Error(), linkForLog(urlVLess))
 				continue
 			}
 			if flow := query.Get("flow"); flow != "" {
@@ -271,7 +271,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 				vmess := make(map[string]any, 20)
 				err = handleVShareLink(names, urlVMess, scheme, vmess)
 				if err != nil {
-					log.Warnln("error:%s line:%s", err.Error(), line)
+					log.Warnln("error:%s line:%s", err.Error(), linkForLog(urlVMess))
 					continue
 				}
 				vmess["alterId"] = 0
@@ -794,4 +794,11 @@ func resolveObfs(m map[string]any, query url.Values) {
 		}
 	}
 	m["obfs"] = obfs
+}
+
+// linkForLog is a share link without what can be a secret in it: the user
+// info, which is the uuid, and the query, which carries the secrets of an
+// xdrive storage service (OAuth client and refresh token, S3 keys).
+func linkForLog(link *url.URL) string {
+	return (&url.URL{Scheme: link.Scheme, Host: link.Host, Path: link.Path, Fragment: link.Fragment}).String()
 }

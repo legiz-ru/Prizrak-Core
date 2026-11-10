@@ -3,10 +3,14 @@ package convert_test
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter"
 	. "github.com/metacubex/mihomo/common/convert"
+	"github.com/metacubex/mihomo/log"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -265,4 +269,119 @@ func TestConvertsXrayJSONResilience(t *testing.T) {
 	}
 	assert.False(t, IsXrayJSON([]byte("vless://x@y:1#z")))
 	assert.False(t, IsXrayJSON([]byte(base64.StdEncoding.EncodeToString([]byte("vless://x@y:1#z")))))
+}
+
+const xdriveXrayJSON = `{"remarks":"XD","outbounds":[
+ {"tag":"proxy","protocol":"vless","mux":{"enabled":true,"concurrency":16,"xudpConcurrency":16,"xudpProxyUDP443":"reject"},
+  "settings":{"address":"www.google.com","port":443,"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"mlkem768x25519plus.native.0rtt.gWPtAUIX9CGNQhiWit9Zty9ryz8kQKMiXkzjtC_sxSA"},
+  "streamSettings":{"network":"xdrive","security":"tls","address":"1.2.3.4","port":443,
+   "tlsSettings":{"serverName":"www.google.com","alpn":["h2"],"fingerprint":"chrome"},
+   "xdriveSettings":{"service":"google-drive","remoteFolder":"folderId","secrets":["client","secret","refresh"],"eagerWindowMs":10000,"concurrency":32,
+    "xmux":{"maxConnections":"2-4","hKeepAlivePeriod":30}}}}]}`
+
+func TestConvertsXrayJSONXDrive(t *testing.T) {
+	proxies, err := ConvertsXrayJSON([]byte(xdriveXrayJSON))
+	require.NoError(t, err)
+	require.Len(t, proxies, 1)
+	p := proxies[0]
+	assert.Equal(t, "vless", p["type"])
+	assert.Equal(t, "xdrive", p["network"])
+	assert.Equal(t, "mlkem768x25519plus.native.0rtt.gWPtAUIX9CGNQhiWit9Zty9ryz8kQKMiXkzjtC_sxSA", p["encryption"])
+	assert.Equal(t, true, p["tls"])
+	assert.Equal(t, []string{"h2"}, p["alpn"])
+	assert.Equal(t, map[string]any{"enabled": true, "max-concurrency": 16, "xudp-concurrency": 16, "xudp-proxy-udp443": "reject"}, p["mux.cool"])
+	assert.Equal(t, map[string]any{
+		"service":         "google-drive",
+		"remote-folder":   "folderId",
+		"secrets":         []string{"client", "secret", "refresh"},
+		"eager-window-ms": 10000,
+		"concurrency":     32,
+		"reuse-settings":  map[string]any{"max-connections": "2-4", "h-keep-alive-period": 30},
+		"address":         "1.2.3.4",
+		"port":            443,
+	}, p["xdrive-opts"])
+	_, err = adapter.ParseProxy(p)
+	require.NoError(t, err)
+}
+
+func TestConvertsXrayJSONXDriveServices(t *testing.T) {
+	const template = `{"flatten":true,"auth":{"type":"oauth2","tokenUrl":"https://t/x","form":{"client_id":"{secret0}"},"tokenPath":"a.b","expiryPath":"exp","header":{"Authorization":"Bearer {token}"}},
+	 "put":{"method":"PUT","url":"https://d/{name}"},"get":{"url":"https://d/{name}","hrefPath":"href","hrefMethod":"GET"},"delete":{"method":"DELETE","url":"https://d/{name}"},
+	 "list":{"url":"https://d/?p={prefix}","namesRegex":"<a>([^<]+)"},"retry":{"status":[429],"rateReason":"reason"}}`
+	config := func(settings string, mux string) string {
+		return `{"remarks":"x","outbounds":[{"protocol":"vless","mux":` + mux + `,"settings":{"address":"a.example.com","port":443,"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"mlkem768x25519plus.native.0rtt.gWPtAUIX9CGNQhiWit9Zty9ryz8kQKMiXkzjtC_sxSA"},"streamSettings":{"network":"xdrive","xdriveSettings":` + settings + `}}]}`
+	}
+	proxies, err := ConvertsXrayJSON([]byte(config(`{"service":"template","remoteFolder":"f","secrets":["s"],"template":`+template+`}`, `{"enabled":true}`)))
+	require.NoError(t, err)
+	opts := proxies[0]["xdrive-opts"].(map[string]any)
+	tmpl := opts["template"].(map[string]any)
+	assert.Equal(t, true, tmpl["flatten"])
+	auth := tmpl["auth"].(map[string]any)
+	assert.Equal(t, "https://t/x", auth["token-url"])
+	assert.Equal(t, "a.b", auth["token-path"])
+	assert.Equal(t, map[string]any{"Authorization": "Bearer {token}"}, auth["header"])
+	assert.Equal(t, "href", tmpl["get"].(map[string]any)["href-path"])
+	assert.Equal(t, "<a>([^<]+)", tmpl["list"].(map[string]any)["names-regex"])
+	assert.Equal(t, "reason", tmpl["retry"].(map[string]any)["rate-reason"])
+	_, err = adapter.ParseProxy(proxies[0])
+	require.NoError(t, err)
+
+	proxies, err = ConvertsXrayJSON([]byte(config(`{"service":"s3","remoteFolder":"prefix","secrets":["AK","SK"],"s3":{"endpoint":"https://s3.example.com","region":"eu","bucket":"b1","pathStyle":false}}`, `{"enabled":true}`)))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"endpoint": "https://s3.example.com", "region": "eu", "bucket": "b1", "path-style": false}, proxies[0]["xdrive-opts"].(map[string]any)["s3"])
+	_, err = adapter.ParseProxy(proxies[0])
+	require.NoError(t, err)
+
+	// Xray-core refuses xdrive without mux, and so does a converter.
+	_, err = ConvertsXrayJSON([]byte(config(`{"service":"local","remoteFolder":"/tmp/x"}`, `{"enabled":false}`)))
+	assert.Error(t, err)
+}
+
+func TestConvertsV2RayVlessXDrive(t *testing.T) {
+	link := "vless://b831381d-6324-4d53-ad4f-8cda48b30811@www.google.com:443?encryption=mlkem768x25519plus.native.0rtt.gWPtAUIX9CGNQhiWit9Zty9ryz8kQKMiXkzjtC_sxSA&type=xdrive&service=google-drive&remoteFolder=folderId&secrets=a,b,c&extra=" + url.QueryEscape(`{"eagerWindowMs":10000}`) + "&security=tls&sni=www.google.com&alpn=h2#xd"
+	proxies, err := ConvertsV2Ray([]byte(link))
+	require.NoError(t, err)
+	require.Len(t, proxies, 1)
+	p := proxies[0]
+	assert.Equal(t, "xdrive", p["network"])
+	assert.Equal(t, map[string]any{"enabled": true}, p["mux.cool"])
+	assert.Equal(t, map[string]any{"service": "google-drive", "remote-folder": "folderId", "secrets": []string{"a", "b", "c"}, "eager-window-ms": 10000}, p["xdrive-opts"])
+	_, err = adapter.ParseProxy(p)
+	require.NoError(t, err)
+
+	_, err = ConvertsV2Ray([]byte("vmess://b831381d-6324-4d53-ad4f-8cda48b30811@a.example.com:443?type=xdrive&service=local&remoteFolder=/tmp/x#x"))
+	assert.Error(t, err)
+}
+
+// A share link that fails to convert is logged without its query and user
+// info: for xdrive the query holds the OAuth client and refresh token.
+func TestConvertsV2RayXDriveErrorLogHidesSecrets(t *testing.T) {
+	sub := log.Subscribe()
+	defer log.UnSubscribe(sub)
+
+	const secret = "1//0refresh-token-secret"
+	for _, link := range []string{
+		// no service: the converter refuses it
+		"vless://b831381d-6324-4d53-ad4f-8cda48b30811@www.google.com:443?encryption=mlkem768x25519plus.native.0rtt.x&type=xdrive&remoteFolder=f&secrets=id,client-secret," + url.QueryEscape(secret) + "#xd",
+		"vmess://b831381d-6324-4d53-ad4f-8cda48b30811@www.google.com:443?type=xdrive&service=google-drive&remoteFolder=f&secrets=id,client-secret," + url.QueryEscape(secret) + "#xd",
+	} {
+		_, _ = ConvertsV2Ray([]byte(link))
+	}
+
+	warnings := 0
+	timeout := time.After(time.Second)
+	for warnings < 2 {
+		select {
+		case event := <-sub:
+			if strings.Contains(event.Payload, "refresh-token-secret") || strings.Contains(event.Payload, "client-secret") ||
+				strings.Contains(event.Payload, "b831381d") {
+				t.Fatalf("a secret reached the log: %s", event.Payload)
+			}
+			if event.LogLevel == log.WARNING && strings.Contains(event.Payload, "xdrive") {
+				warnings++
+			}
+		case <-timeout:
+			t.Fatalf("%d of 2 warnings logged", warnings)
+		}
+	}
 }

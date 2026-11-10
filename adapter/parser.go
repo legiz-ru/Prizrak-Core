@@ -8,6 +8,14 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 )
 
+// The mux of Xray-core v26.11.9 for every outbound
+// (app/proxyman/outbound/handler.go): a concurrency below 128 is raised to
+// 128 and a connection carries at most 1024 streams in its life.
+const (
+	xdriveMinMuxConcurrency = 128
+	xdriveMinMuxConnections = 1024
+)
+
 func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {
 	decoder := structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
 	proxyType, existType := mapping["type"].(string)
@@ -255,6 +263,23 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	}
 	if muxOption.Enabled && muxCoolOption.Enabled {
 		return nil, fmt.Errorf("smux and mux.cool cannot be enabled together")
+	}
+	if proxyType == "vless" && mapping["network"] == "xdrive" {
+		// As Xray-core refuses it: every connection would be a session of its
+		// own, with a ring of objects to create on the storage.
+		if !muxCoolOption.Enabled || muxCoolOption.XUDPProxyUDP443 == "skip" {
+			return nil, fmt.Errorf(`xdrive needs "mux.cool" enabled and no "xudp-proxy-udp443": "skip"`)
+		}
+		// Xray-core raises a lower mux concurrency to this: a session is a ring
+		// of objects and pollers, so as many streams as can share one should.
+		if muxCoolOption.MaxConcurrency < xdriveMinMuxConcurrency {
+			muxCoolOption.MaxConcurrency = xdriveMinMuxConcurrency
+		}
+		// Each carrier is a new session with a new ring on the storage, so it
+		// should live as long as in Xray-core, not end after 128 streams.
+		if muxCoolOption.MaxConnections < xdriveMinMuxConnections {
+			muxCoolOption.MaxConnections = xdriveMinMuxConnections
+		}
 	}
 	if muxOption.Enabled {
 		proxy, err = outbound.NewSingMux(*muxOption, proxy)

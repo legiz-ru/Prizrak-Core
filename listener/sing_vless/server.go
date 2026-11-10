@@ -9,6 +9,7 @@ import (
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -22,6 +23,7 @@ import (
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/vless/encryption"
 	mihomoVMess "github.com/metacubex/mihomo/transport/vmess"
+	"github.com/metacubex/mihomo/transport/xdrive"
 	"github.com/metacubex/mihomo/transport/xhttp"
 
 	"github.com/metacubex/http"
@@ -38,6 +40,7 @@ type Listener struct {
 	service    *Service[string]
 	decryption *encryption.ServerInstance
 	handler    *sing.ListenerHandler
+	xdrive     *xdrive.Listener
 }
 
 func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (sl *Listener, err error) {
@@ -90,6 +93,15 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 				_ = decryption.Close()
 			}
 		}()
+	}
+
+	if config.XDriveConfig.Service != "" {
+		// A session comes from the storage service, there is no socket to
+		// listen on: the listen address only names the listener, as in Xray.
+		if err := sl.listenXDrive(config, fm, tunnel, additions...); err != nil {
+			return nil, err
+		}
+		return sl, nil
 	}
 
 	httpServer := http.Server{
@@ -327,8 +339,83 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	return sl, nil
 }
 
+// listenXDrive serves the transport over the xdrive-config of the listener.
+func (l *Listener) listenXDrive(config LC.VlessServer, fm *finalmask.FinalMask, tunnel C.Tunnel, additions ...inbound.Addition) error {
+	if config.Decryption == "" || config.Decryption == "none" {
+		return errors.New(`xdrive needs vless decryption, run "xray vlessenc" to get one`)
+	}
+	for _, user := range config.Users {
+		if user.Flow != "" {
+			return errors.New("xdrive does not support flow")
+		}
+	}
+	opts := config.XDriveConfig
+	h3 := len(opts.ALPN) == 1 && opts.ALPN[0] == "h3"
+	if h3 {
+		return errors.New("xdrive-config alpn [h3] is not supported on a listener")
+	}
+	cfg, err := opts.Options.Build(h3)
+	if err != nil {
+		return err
+	}
+	if cfg.Service == "local" && cfg.RemoteFolder != "" {
+		folder := C.Path.Resolve(cfg.RemoteFolder)
+		if !C.Path.IsSafePath(folder) {
+			return C.Path.ErrNotSafePath(folder)
+		}
+		cfg.RemoteFolder = folder
+	}
+	d := dialer.NewDialer()
+	fmDialer := &finalmask.Dialer{
+		DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
+			return d.DialContext(ctx, "tcp", addr)
+		},
+	}
+	l.xdrive, err = xdrive.Listen(cfg, &xdrive.Dialer{
+		Address: opts.Address,
+		Port:    opts.Port,
+		DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
+			if !fm.HasTCP() {
+				return d.DialContext(ctx, "tcp", addr)
+			}
+			dest, err := finalmask.ParseDestination(addr)
+			if err != nil {
+				return nil, err
+			}
+			return fm.DialTCP(ctx, dest, fmDialer)
+		},
+		WrapTLS: func(ctx context.Context, raw net.Conn, host string) (net.Conn, error) {
+			serverName := opts.ServerName
+			if serverName == "" {
+				serverName = host
+			}
+			clientFingerprint := opts.ClientFingerprint
+			if clientFingerprint == "" {
+				clientFingerprint = "chrome"
+			}
+			alpn := opts.ALPN
+			if len(alpn) == 0 {
+				alpn = []string{"h2", "http/1.1"}
+			}
+			return mihomoVMess.StreamTLSConn(ctx, raw, &mihomoVMess.TLSConfig{
+				Host:              serverName,
+				SkipCertVerify:    opts.SkipCertVerify,
+				FingerPrint:       opts.Fingerprint,
+				ClientFingerprint: clientFingerprint,
+				NextProtos:        alpn,
+			})
+		},
+	}, func(conn net.Conn) {
+		go l.HandleConn(conn, tunnel, additions...)
+	})
+	return err
+}
+
 func (l *Listener) Close() error {
 	l.closed = true
+	if l.xdrive != nil {
+		_ = l.xdrive.Close()
+	}
 	var retErr error
 	for _, lis := range l.listeners {
 		err := lis.Close()

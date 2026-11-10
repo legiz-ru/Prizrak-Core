@@ -8,6 +8,7 @@ import (
 	"github.com/metacubex/mihomo/listener/sing_vless"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/finalmask/option"
+	"github.com/metacubex/mihomo/transport/xdrive"
 	"github.com/metacubex/mihomo/transport/xhttp"
 )
 
@@ -17,6 +18,7 @@ type VlessOption struct {
 	Decryption      string        `inbound:"decryption,omitempty"`
 	WsPath          string        `inbound:"ws-path,omitempty"`
 	XHTTPConfig     XHTTPConfig   `inbound:"xhttp-config,omitempty"`
+	XDriveConfig    XDriveConfig  `inbound:"xdrive-config,omitempty"`
 	GrpcServiceName string        `inbound:"grpc-service-name,omitempty"`
 	Certificate     string        `inbound:"certificate,omitempty"`
 	PrivateKey      string        `inbound:"private-key,omitempty"`
@@ -98,6 +100,29 @@ func (o XHTTPConfig) Build() LC.XHTTPConfig {
 	}
 }
 
+// XDriveConfig is the xdrive-config of a vless listener: the options of the
+// proxy's xdrive-opts, and the TLS settings of the requests the listener makes
+// to the storage service, which a proxy takes from its own tls fields.
+type XDriveConfig struct {
+	xdrive.Options    `inbound:",squash"`
+	ServerName        string   `inbound:"servername,omitempty"`
+	ALPN              []string `inbound:"alpn,omitempty"`
+	ClientFingerprint string   `inbound:"client-fingerprint,omitempty"`
+	SkipCertVerify    bool     `inbound:"skip-cert-verify,omitempty"`
+	Fingerprint       string   `inbound:"fingerprint,omitempty"`
+}
+
+func (o XDriveConfig) Build() LC.XDriveConfig {
+	return LC.XDriveConfig{
+		Options:           o.Options,
+		ServerName:        o.ServerName,
+		ALPN:              o.ALPN,
+		ClientFingerprint: o.ClientFingerprint,
+		SkipCertVerify:    o.SkipCertVerify,
+		Fingerprint:       o.Fingerprint,
+	}
+}
+
 func (o VlessOption) Equal(config C.InboundConfig) bool {
 	return optionToString(o) == optionToString(config)
 }
@@ -132,6 +157,7 @@ func NewVless(options *VlessOption) (*Vless, error) {
 			Decryption:      options.Decryption,
 			WsPath:          options.WsPath,
 			XHTTPConfig:     options.XHTTPConfig.Build(),
+			XDriveConfig:    options.XDriveConfig.Build(),
 			GrpcServiceName: options.GrpcServiceName,
 			Certificate:     options.Certificate,
 			PrivateKey:      options.PrivateKey,

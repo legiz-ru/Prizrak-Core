@@ -183,6 +183,15 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 
 		proxy["xhttp-opts"] = xhttpOpts
 
+	case "xdrive":
+		opts, err := xdriveLinkOpts(query, scheme)
+		if err != nil {
+			return err
+		}
+		proxy["network"] = "xdrive"
+		proxy["xdrive-opts"] = opts
+		proxy["mux.cool"] = map[string]any{"enabled": true}
+
 	case "kcp", "mkcp":
 		kcp := map[string]any{}
 		for _, key := range []string{"mtu", "tti", "uplinkCapacity", "downlinkCapacity", "readBufferSize", "writeBufferSize", "congestion", "headerType", "seed"} {

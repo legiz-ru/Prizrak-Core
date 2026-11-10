@@ -133,3 +133,49 @@ func unwrapAutoClose(t *testing.T, adapter any) any {
 	}
 	return field.Interface()
 }
+
+// Xray-core gives every mux a concurrency of at least 128 and 1024 streams
+// over the life of a connection; for xdrive a carrier is a whole session on
+// the storage, so the parser raises lower numbers to these.
+func TestParseProxyXDriveMuxCoolLimits(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		muxCool         map[string]any
+		wantConcurrency int
+		wantConnections int
+	}{
+		{name: "defaults", muxCool: map[string]any{"enabled": true}, wantConcurrency: 128, wantConnections: 1024},
+		{
+			name:            "lower",
+			muxCool:         map[string]any{"enabled": true, "max-concurrency": 8, "max-connections": 128},
+			wantConcurrency: 128, wantConnections: 1024,
+		},
+		{
+			name:            "higher",
+			muxCool:         map[string]any{"enabled": true, "max-concurrency": 256, "max-connections": 4096},
+			wantConcurrency: 256, wantConnections: 4096,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := ParseProxy(map[string]any{
+				"name": "xd", "type": "vless", "server": "127.0.0.1", "port": 443, "uuid": xrayUUID,
+				"encryption": xdriveTestEncryption, "network": "xdrive",
+				"mux.cool":    tt.muxCool,
+				"xdrive-opts": map[string]any{"service": "local", "remote-folder": homeTempDir(t)},
+			})
+			if err != nil {
+				t.Fatalf("ParseProxy: %v", err)
+			}
+			defer parsed.Close()
+			muxCool, ok := unwrapAutoClose(t, parsed.Adapter()).(*outbound.MuxCool)
+			if !ok {
+				t.Fatalf("no mux.cool wrapper")
+			}
+			options := muxCool.Options()
+			if options.MaxConcurrency != tt.wantConcurrency || options.MaxConnections != tt.wantConnections {
+				t.Fatalf("max-concurrency %d, max-connections %d; want %d, %d",
+					options.MaxConcurrency, options.MaxConnections, tt.wantConcurrency, tt.wantConnections)
+			}
+		})
+	}
+}

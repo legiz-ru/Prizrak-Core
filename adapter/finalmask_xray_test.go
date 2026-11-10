@@ -138,11 +138,12 @@ func echoServer(t *testing.T) int {
 }
 
 type xrayServer struct {
-	proto    string         // vless or trojan
-	stream   map[string]any // streamSettings
-	port     int
-	network  string // tcp or udp: what the inbound listens on
-	readyTCP int    // a socks inbound to wait for
+	proto      string         // vless or trojan
+	stream     map[string]any // streamSettings
+	port       int
+	network    string // tcp or udp: what the inbound listens on
+	readyTCP   int    // a socks inbound to wait for
+	decryption string // the VLESS decryption, "none" by default
 }
 
 // startXray writes the config and runs the binary until the test ends.
@@ -152,10 +153,18 @@ func startXray(t *testing.T, bin string, s xrayServer) {
 	settings := map[string]any{}
 	switch s.proto {
 	case "vless":
-		settings = map[string]any{"clients": []any{
+		clients := []any{
 			map[string]any{"id": xrayUUID},
 			map[string]any{"id": xrayVisionUUID, "flow": "xtls-rprx-vision"},
-		}, "decryption": "none"}
+		}
+		decryption := s.decryption
+		if decryption == "" {
+			decryption = "none"
+		} else {
+			// Xray refuses flow together with the VLESS encryption of xdrive.
+			clients = clients[:1]
+		}
+		settings = map[string]any{"clients": clients, "decryption": decryption}
 	case "trojan":
 		settings = map[string]any{"clients": []any{map[string]any{"password": xrayPassword}}}
 	}
