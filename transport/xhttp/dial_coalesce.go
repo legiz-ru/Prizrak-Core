@@ -32,8 +32,11 @@ import (
 //   - a successful leader keeps its place for another coalescedDialRetry: a
 //     request that comes while net/http is setting up h2 and has not put the
 //     connection in the pool yet would otherwise dial on its own;
-//   - a repeated getConn of the same request (the connection did not take it)
-//     does not wait behind a successful leader but dials at once.
+//   - a repeated search for a connection by the same request (the connection
+//     did not take it) does not wait behind a successful leader but dials at
+//     once;
+//   - nobody waits behind a leader that has been dialing for longer than
+//     coalescedDialStale: a new request or one of the followers dials itself.
 //
 // This replaces the MaxConnsPerHost 1 that Prizrak-Core set on the h2
 // transport before. That also let one dial go at a time, but every request
@@ -61,6 +64,21 @@ const coalescedDialRetry = 250 * time.Millisecond
 // of dialing again.
 var coalescedDialTimeout = 5 * time.Second
 
+// coalescedDialStale is longer than a handshake takes on a working path, so a
+// leader dialing for longer has most likely hung: a block after the
+// ClientHello remembers the flow, and lifting the block will not revive it.
+// Nobody waits behind such a leader: the first follower to notice the bound
+// dials itself, the others queue behind it, and a request arriving later
+// notices the bound at once. Otherwise a page's burst started during a block
+// would hold on to the hung dial until coalescedDialTimeout, and sessions that
+// came after the block was lifted would wait for it. A successful new dial
+// puts its connection in the pool, where those who waited for the old leader
+// get it too. While the path stays blocked, an address gets at most one new
+// dial per coalescedDialStale, and each takes up one follower. The bound is
+// above a REALITY handshake on a slow mobile link (0.6-0.9 s): a smaller one
+// would make extra dials there.
+var coalescedDialStale = time.Second
+
 var errCoalescedDialAbandoned = errors.New("xhttp: coalesced dial abandoned")
 
 type dialRoundTripKey struct{}
@@ -71,30 +89,41 @@ type dialRoundTripKey struct{}
 type dialRoundTrip struct {
 	mu       sync.Mutex
 	done     bool
-	attempts int           // how many times net/http dialed for this RoundTrip
+	getConns int           // how many times net/http looked for a connection for this RoundTrip
 	donec    chan struct{} // closed when the RoundTrip has returned
-	gotConnc chan struct{} // closed when the request has got a connection
+	gotConnc chan struct{} // closed when the latest search for a connection has ended
 }
 
-// startDial is called at the start of every dial of this RoundTrip (net/http
-// repeats getConn when an h2 connection does not take the request). done:
-// the RoundTrip has returned already and there is nobody to dial for.
+// getConn is called by the GetConn hook at the start of every search for a
+// connection (net/http searches again when an h2 connection does not take
+// the request). The searches of one request come one after another, and a new
+// one means the previous one has got a connection: its dial, if it still
+// waits for a leader, is not needed any more.
 //
-// A new getConn means the previous one has got a connection, and its dial, if
-// it still waits for a leader, is not needed any more: its channel is closed
-// here, or it would never see GotConn and would dial for nothing.
-func (s *dialRoundTrip) startDial() (gotConnc chan struct{}, retried bool, done bool) {
+// The search is marked here rather than in the dial: net/http starts a dial
+// on a goroutine of its own, and the dial of an earlier search may start
+// later than the dial of a newer one.
+func (s *dialRoundTrip) getConn() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.done {
-		return nil, false, true
-	}
 	if s.gotConnc != nil {
 		close(s.gotConnc)
 	}
 	s.gotConnc = make(chan struct{})
-	s.attempts++
-	return s.gotConnc, s.attempts > 1, false
+	s.getConns++
+}
+
+// startDial is called at the start of every dial of this RoundTrip. done:
+// there is nobody to dial for, as the RoundTrip has returned or the latest
+// search has got a connection already and the dial came late. retried: the
+// request has had a connection already, and it did not take the request.
+func (s *dialRoundTrip) startDial() (gotConnc chan struct{}, retried bool, done bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done || s.gotConnc == nil {
+		return nil, false, true
+	}
+	return s.gotConnc, s.getConns > 1, false
 }
 
 func (s *dialRoundTrip) gotConn() {
@@ -118,6 +147,7 @@ type leaderDial struct {
 	dialc   chan struct{} // closed when the dial has returned; err is set by then
 	err     error
 	rtDonec chan struct{} // donec of the RoundTrip the dial was started for
+	started time.Time     // when the dial started
 	guard   *guardedDial
 	refs    int // under coalescingTransport.mu: the RoundTrips waiting for this dial
 }
@@ -155,9 +185,10 @@ func (c *coalescingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	rt := &dialRoundTrip{donec: make(chan struct{})}
 	defer rt.finish()
 	ctx := context.WithValue(req.Context(), dialRoundTripKey{}, rt)
-	// WithClientTrace adds a hook to the trace already there rather than
+	// WithClientTrace adds hooks to the trace already there rather than
 	// replacing it: the XHTTP client's own GotConn is still called.
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GetConn: func(string) { rt.getConn() },
 		GotConn: func(httptrace.GotConnInfo) { rt.gotConn() },
 	})
 	return c.Transport.RoundTrip(req.WithContext(ctx))
@@ -186,7 +217,7 @@ func (c *coalescingTransport) dial(ctx context.Context, dial func(context.Contex
 		}
 		if l == nil {
 			g, gctx := newGuardedDial(ctx)
-			l = &leaderDial{dialc: make(chan struct{}), rtDonec: rt.donec, guard: g, refs: 1}
+			l = &leaderDial{dialc: make(chan struct{}), rtDonec: rt.donec, started: time.Now(), guard: g, refs: 1}
 			if c.leaders == nil {
 				c.leaders = make(map[string]*leaderDial)
 			}
@@ -201,19 +232,25 @@ func (c *coalescingTransport) dial(ctx context.Context, dial func(context.Contex
 		if !again {
 			return conn, err
 		}
-		// The leader's connection did not come to us: take the leader
-		// down so that on the next round we lead rather than wait for it
-		// again.
+		// The leader's connection did not come to us, or the leader hung:
+		// take it down so that on the next round we lead rather than wait
+		// for it again. If another one has replaced it, we queue behind
+		// that one.
 		c.unlead(l, addr)
 	}
 }
 
-// follow waits for the leader l. again: the leader has dialed, and our request
-// never got the connection; it is time to dial ourselves.
+// follow waits for the leader l. again: the leader has dialed and our request
+// never got the connection, or the leader hung; it is time to dial ourselves.
 func (c *coalescingTransport) follow(ctx context.Context, l *leaderDial, rt *dialRoundTrip, gotConnc chan struct{}, addr string) (conn net.Conn, err error, again bool) {
 	defer c.release(l, addr)
 	dialc, rtDonec := l.dialc, l.rtDonec
 	var retry <-chan time.Time
+	stale := time.NewTimer(time.Until(l.started.Add(coalescedDialStale)))
+	defer stale.Stop()
+	// A channel variable rather than stale.C in the select: with go 1.20 in
+	// go.mod a stopped timer may leave a value in its channel.
+	staleC := stale.C
 	for {
 		if dialc == nil && rtDonec == nil && retry == nil {
 			// The leader has dialed and its RoundTrip has returned, and
@@ -228,6 +265,15 @@ func (c *coalescingTransport) follow(ctx context.Context, l *leaderDial, rt *dia
 				return nil, l.err, false
 			}
 			dialc = nil
+			staleC = nil
+		case <-staleC:
+			staleC = nil
+			select {
+			case <-l.dialc:
+				// The dial ended right at the bound: handle it as usual.
+			default:
+				return nil, nil, true
+			}
 		case <-rtDonec:
 			rtDonec = nil
 		case <-retry:
