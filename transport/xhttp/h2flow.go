@@ -16,7 +16,7 @@ import (
 )
 
 // The HTTP/2 flow governor below is ported from Medium1992/mihomo-proxy-ros
-// (core_patches/xhttp_flow, synced with Xray-core-fork v26.10.21-h2Flow),
+// (core_patches/xhttp_flow, synced with Xray-core-fork v26.10.31-h2Flow-1),
 // which carries the client role of the governor from Medium1992/Xray-core-fork.
 // Changes for Prizrak-Core: it builds with Go 1.20 (no min, max and clear
 // builtins, randv2 instead of math/rand/v2) and is switched on per proxy by
@@ -1483,6 +1483,9 @@ func (c *flowConn) endDown(s *flowStream) {
 		return
 	}
 	s.serverDone = true
+	// The frame that ended the stream may have armed the guard for it, see
+	// armGuard: a stream the server has finished waits for no credit.
+	s.down.waiting = time.Time{}
 	c.downOpen--
 	c.downOpenForwarded -= s.downForwarded
 	c.downOpenSent -= s.downSent
@@ -2345,8 +2348,12 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 	default:
 		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 		// A round trip pi saw before the stream left it is no step to
-		// follow when it comes back.
-		s.down.piRTT = 0
+		// follow when it comes back, and an error it saw then is no change
+		// to step by. Nor does a cap of pi's hold the stream out here, so
+		// its rate is no part of the share the downloads in pi step up by:
+		// the stream comes back as a new one starts.
+		s.down.piRTT, s.down.piPrev = 0, 0
+		s.down.rate, s.down.capped = 0, false
 	}
 	switch {
 	case c.client:
