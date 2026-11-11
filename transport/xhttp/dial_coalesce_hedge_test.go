@@ -154,6 +154,47 @@ func TestCoalesceDialsHedgeQuietOnHealthyPath(t *testing.T) {
 	}
 }
 
+// The backup dial is refused at once (a reset, a closed port), and the stuck
+// leader connects after 600 ms. Those who queued behind the backup do not
+// fail with its error but wait for the leader, as without a backup. The
+// followers leave for the backup at the same instant, and one that gets there
+// after it has failed starts no second one: it would be refused too, and that
+// would make a dial per follower.
+func TestCoalesceDialsFailedHedgeFallsBackToLeader(t *testing.T) {
+	addr := okServer(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := ln.Addr().String()
+	ln.Close()
+	var d dialCounter
+	mk := hedgeFactory(t, &d, func(n int64) string {
+		if n <= 2 {
+			return addr
+		}
+		return refused
+	}, func(n int64) time.Duration {
+		if n == 2 {
+			return 600 * time.Millisecond
+		}
+		return 0
+	})
+	if err := roundTrip(mk(), context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	failed, took := burst(mk(), 30, 5*time.Second)
+	if failed != 0 {
+		t.Fatalf("%d of 30 requests failed with the hedge's error", failed)
+	}
+	if took >= coalescedDialStale {
+		t.Fatalf("burst took %v: waited past the leader's dial", took)
+	}
+	if got := d.dials.Load(); got != 3 {
+		t.Fatalf("%d dials, want warm-up, the slow leader and the refused hedge", got)
+	}
+}
+
 // A block on a client with a history: one backup dial per leader, then the
 // coalescedDialStale rule, and a handful of sockets rather than one per
 // request.

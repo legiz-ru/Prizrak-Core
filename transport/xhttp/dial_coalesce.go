@@ -38,7 +38,8 @@ import (
 //   - nobody waits behind a leader that has been dialing for longer than
 //     coalescedDialStale: a new request or one of the followers dials itself;
 //   - if the leader has been dialing for twice as long as usual for this
-//     client, one of the followers starts a backup dial (coalescedHedgeMin).
+//     client, one of the followers starts a backup dial (coalescedHedgeMin);
+//     if the backup fails, its followers go back to the leader.
 //
 // This replaces the MaxConnsPerHost 1 that Prizrak-Core set on the h2
 // transport before. That also let one dial go at a time, but every request
@@ -93,7 +94,10 @@ var coalescedDialStale = time.Second
 // itself and leaders started after coalescedDialStale do not, so at most two
 // dials go at once, and a blocked path still sees at most one new dial per
 // coalescedDialStale. With no history (the client's first dial) the deadline
-// cannot be guessed, and there is no backup dial.
+// cannot be guessed, and there is no backup dial. A backup that fails before
+// the leader (say, a connection reset) does not fail the followers: they go
+// back to the leader and wait for it under coalescedDialStale, as they would
+// have without a backup.
 var coalescedHedgeMin = 250 * time.Millisecond
 
 var errCoalescedDialAbandoned = errors.New("xhttp: coalesced dial abandoned")
@@ -168,8 +172,11 @@ type leaderDial struct {
 	// hedgeable: an ordinary leader, which gets a backup dial. The backup
 	// itself and leaders started after leaving an earlier one do not.
 	hedgeable bool
+	hedgeOf   *leaderDial // for a backup: the leader it was waited for behind
 	guard     *guardedDial
-	refs      int // under coalescingTransport.mu: the RoundTrips waiting for this dial
+	// Under coalescingTransport.mu.
+	refs   int  // the RoundTrips waiting for this dial
+	hedged bool // a backup has been started already: there is no second one
 }
 
 type coalescingTransport struct {
@@ -277,7 +284,13 @@ func (c *coalescingTransport) dial(ctx context.Context, dial func(context.Contex
 	// once it has, its dial is a backup or one after a hung leader, and it
 	// gets no backup of its own.
 	hedgeable := true
+	var hedgeOf *leaderDial
 	for {
+		var (
+			conn          net.Conn
+			err           error
+			again, hedged bool
+		)
 		c.mu.Lock()
 		l := c.leaders[addr]
 		if l != nil && retried && l.succeeded() {
@@ -287,20 +300,42 @@ func (c *coalescingTransport) dial(ctx context.Context, dial func(context.Contex
 			delete(c.leaders, addr)
 			l = nil
 		}
+		hedge := true
+		if l == nil && hedgeOf != nil {
+			switch {
+			case !hedgeOf.hedged:
+				hedgeOf.hedged = true
+			case alive(hedgeOf):
+				// The leader has had a backup already, and it failed
+				// while we were on our way to it: keep waiting for the
+				// leader and start no second backup.
+				l, hedge = hedgeOf, false
+			default:
+				hedgeOf = nil
+			}
+		}
 		if l == nil {
 			g, gctx := newGuardedDial(ctx)
-			l = &leaderDial{dialc: make(chan struct{}), rtDonec: rt.donec, started: time.Now(), hedgeable: hedgeable, guard: g, refs: 1}
+			l = &leaderDial{dialc: make(chan struct{}), rtDonec: rt.donec, started: time.Now(), hedgeable: hedgeable, hedgeOf: hedgeOf, guard: g, refs: 1}
 			if c.leaders == nil {
 				c.leaders = make(map[string]*leaderDial)
 			}
 			c.leaders[addr] = l
 			c.mu.Unlock()
-			return c.lead(gctx, l, rt, dial, network, addr)
+			conn, err = c.lead(gctx, l, rt, dial, network, addr)
+		} else {
+			l.refs++
+			c.mu.Unlock()
+			conn, err, again, hedged = c.follow(ctx, l, rt, gotConnc, addr, hedge)
 		}
-		l.refs++
-		c.mu.Unlock()
-
-		conn, err, again := c.follow(ctx, l, rt, gotConnc, addr)
+		if err != nil {
+			if p := c.rejoin(l); p != nil {
+				// The backup failed, and the leader we waited for before it
+				// is still alive: keep waiting for it, now with no backup.
+				l = p
+				conn, err, again, _ = c.follow(ctx, l, rt, gotConnc, addr, false)
+			}
+		}
 		if !again {
 			return conn, err
 		}
@@ -310,20 +345,54 @@ func (c *coalescingTransport) dial(ctx context.Context, dial func(context.Contex
 		// it, we queue behind that one. The leader itself keeps dialing.
 		c.unlead(l, addr)
 		hedgeable = false
+		hedgeOf = nil
+		if hedged {
+			hedgeOf = l
+		}
+	}
+}
+
+// rejoin is whom the followers of the failed dial l go back to: the leader l
+// was a backup of, if it is still alive. That leader stays held by this
+// RoundTrip, as with an ordinary follow.
+func (c *coalescingTransport) rejoin(l *leaderDial) *leaderDial {
+	p := l.hedgeOf
+	if p == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !alive(p) {
+		return nil
+	}
+	p.refs++
+	return p
+}
+
+// alive reports whether the dial l is still going or has succeeded, that is,
+// whether waiting for it makes sense. Called under coalescingTransport.mu.
+func alive(l *leaderDial) bool {
+	select {
+	case <-l.dialc:
+		return l.err == nil
+	default:
+		// With no followers it is aborted and is about to return an error.
+		return l.refs > 0
 	}
 }
 
 // follow waits for the leader l. again: the leader has dialed and our request
 // never got the connection, the leader hung, or it is time for a backup dial;
-// it is time to dial ourselves.
-func (c *coalescingTransport) follow(ctx context.Context, l *leaderDial, rt *dialRoundTrip, gotConnc chan struct{}, addr string) (conn net.Conn, err error, again bool) {
+// it is time to dial ourselves; hedged: for a backup dial, specifically.
+// hedge = false: do not wait for a backup, even if the leader gets one.
+func (c *coalescingTransport) follow(ctx context.Context, l *leaderDial, rt *dialRoundTrip, gotConnc chan struct{}, addr string, hedge bool) (conn net.Conn, err error, again, hedged bool) {
 	defer c.release(l, addr)
 	dialc, rtDonec := l.dialc, l.rtDonec
 	var retry <-chan time.Time
 	wait := coalescedDialStale
-	if l.hedgeable {
+	if hedge && l.hedgeable {
 		if d, ok := c.hist.hedgeAfter(addr); ok {
-			wait = d
+			wait, hedged = d, true
 		}
 	}
 	stale := time.NewTimer(time.Until(l.started.Add(wait)))
@@ -342,7 +411,7 @@ func (c *coalescingTransport) follow(ctx context.Context, l *leaderDial, rt *dia
 		select {
 		case <-dialc:
 			if l.err != nil {
-				return nil, l.err, false
+				return nil, l.err, false, false
 			}
 			dialc = nil
 			staleC = nil
@@ -352,19 +421,19 @@ func (c *coalescingTransport) follow(ctx context.Context, l *leaderDial, rt *dia
 			case <-l.dialc:
 				// The dial ended right at the bound: handle it as usual.
 			default:
-				return nil, nil, true
+				return nil, nil, true, hedged
 			}
 		case <-rtDonec:
 			rtDonec = nil
 		case <-retry:
-			return nil, nil, true
+			return nil, nil, true, false
 		case <-rt.donec:
-			return nil, errCoalescedDialAbandoned, false
+			return nil, errCoalescedDialAbandoned, false, false
 		case <-gotConnc:
 			// The request has a connection, it needs this dial no more.
-			return nil, errCoalescedDialAbandoned, false
+			return nil, errCoalescedDialAbandoned, false, false
 		case <-ctx.Done():
-			return nil, ctx.Err(), false
+			return nil, ctx.Err(), false, false
 		}
 	}
 }

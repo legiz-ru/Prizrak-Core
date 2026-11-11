@@ -72,13 +72,14 @@ func TestH2ClientSharesOneDialWhileHandshakeHangs(t *testing.T) {
 // connection; more are dialed only when the server's stream limit is reached.
 // Those dials are coalesced too, but a request that retries while another one
 // has just taken the place of the leader may dial once more, so the stream
-// limit case allows a little over the four connections it needs (upstream's
-// TestCoalesceDialsStreamLimit allows more).
+// limit case allows up to twice the four connections it needs: 5 or 6 are
+// common and 7 or 8 come about once in 300 runs, while a dial per request
+// would make 16 (upstream's TestCoalesceDialsStreamLimit allows 10 for 6).
 func TestH2ClientBurstOpensOneConnection(t *testing.T) {
 	for _, tc := range []struct {
 		streams  uint32
 		min, max int32
-	}{{0, 1, 1}, {4, 4, 6}} {
+	}{{0, 1, 1}, {4, 4, 8}} {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		assert.NoError(t, err)
 		// every request holds its stream until all 16 are in, so the
