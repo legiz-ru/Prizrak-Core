@@ -36,7 +36,9 @@ import (
 //     did not take it) does not wait behind a successful leader but dials at
 //     once;
 //   - nobody waits behind a leader that has been dialing for longer than
-//     coalescedDialStale: a new request or one of the followers dials itself.
+//     coalescedDialStale: a new request or one of the followers dials itself;
+//   - if the leader has been dialing for twice as long as usual for this
+//     client, one of the followers starts a backup dial (coalescedHedgeMin).
 //
 // This replaces the MaxConnsPerHost 1 that Prizrak-Core set on the h2
 // transport before. That also let one dial go at a time, but every request
@@ -78,6 +80,21 @@ var coalescedDialTimeout = 5 * time.Second
 // above a REALITY handshake on a slow mobile link (0.6-0.9 s): a smaller one
 // would make extra dials there.
 var coalescedDialStale = time.Second
+
+// coalescedHedgeMin is the lower bound of the backup dial's deadline. The
+// kernel resends a lost SYN or ClientHello only after a second, and the whole
+// cold burst would wait for that resend, while stock carries on over its
+// other dials. So if the leader has been dialing for twice the smoothed
+// handshake time (dialHistory), one of the followers starts a backup dial and
+// the others queue behind it; net/http hands the connection of whichever
+// lands first to everyone. The lower bound keeps noise on a fast link from
+// making extra dials; the upper one is coalescedDialStale, past which that
+// rule takes over. Only an ordinary leader gets a backup dial: the backup
+// itself and leaders started after coalescedDialStale do not, so at most two
+// dials go at once, and a blocked path still sees at most one new dial per
+// coalescedDialStale. With no history (the client's first dial) the deadline
+// cannot be guessed, and there is no backup dial.
+var coalescedHedgeMin = 250 * time.Millisecond
 
 var errCoalescedDialAbandoned = errors.New("xhttp: coalesced dial abandoned")
 
@@ -148,14 +165,64 @@ type leaderDial struct {
 	err     error
 	rtDonec chan struct{} // donec of the RoundTrip the dial was started for
 	started time.Time     // when the dial started
-	guard   *guardedDial
-	refs    int // under coalescingTransport.mu: the RoundTrips waiting for this dial
+	// hedgeable: an ordinary leader, which gets a backup dial. The backup
+	// itself and leaders started after leaving an earlier one do not.
+	hedgeable bool
+	guard     *guardedDial
+	refs      int // under coalescingTransport.mu: the RoundTrips waiting for this dial
 }
 
 type coalescingTransport struct {
 	*http.Transport
+	hist    *dialHistory
 	mu      sync.Mutex
 	leaders map[string]*leaderDial // by address, as net/http keys its pool
+}
+
+// dialHistory is the smoothed time of a successful dial per address, shared
+// by all transports of one maker, that is, one XHTTP client and one direction.
+// A cold burst is exactly a set of fresh transports, and a measurement kept
+// inside a transport would never build up. It cannot be global either: the
+// address is the host from the URL, and proxies behind one CDN host on
+// different servers would mix their measurements. The smoothing is TCP's SRTT
+// one (weight 1/8): a single slow dial, say after a network change, does not
+// stretch the deadline at once, and a new network is caught up with in a few
+// handshakes.
+type dialHistory struct {
+	mu   sync.Mutex
+	srtt map[string]time.Duration
+}
+
+func (h *dialHistory) observe(addr string, d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.srtt == nil {
+		h.srtt = make(map[string]time.Duration)
+	}
+	if old, ok := h.srtt[addr]; ok {
+		d = old + (d-old)/8
+	}
+	h.srtt[addr] = d
+}
+
+// hedgeAfter is how long after the leader's dial started to start a backup
+// one. ok = false: there is no history, or the deadline is not below
+// coalescedDialStale.
+func (h *dialHistory) hedgeAfter(addr string) (d time.Duration, ok bool) {
+	if h == nil {
+		return 0, false
+	}
+	h.mu.Lock()
+	srtt, ok := h.srtt[addr]
+	h.mu.Unlock()
+	if !ok {
+		return 0, false
+	}
+	d = 2 * srtt
+	if d < coalescedHedgeMin {
+		d = coalescedHedgeMin
+	}
+	return d, d < coalescedDialStale
 }
 
 // CoalesceDials wraps a transport maker so that the dials of its HTTP/2
@@ -166,13 +233,14 @@ func CoalesceDials(mk TransportMaker) TransportMaker {
 	if mk == nil {
 		return nil
 	}
+	hist := &dialHistory{}
 	return func() http.RoundTripper {
 		rt := mk()
 		t, ok := rt.(*http.Transport)
 		if !ok || t.DialTLSContext == nil || t.Protocols == nil || !t.Protocols.UnencryptedHTTP2() {
 			return rt
 		}
-		c := &coalescingTransport{Transport: t}
+		c := &coalescingTransport{Transport: t, hist: hist}
 		dial := t.DialTLSContext
 		t.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return c.dial(ctx, dial, network, addr)
@@ -205,6 +273,10 @@ func (c *coalescingTransport) dial(ctx context.Context, dial func(context.Contex
 	if done {
 		return nil, errCoalescedDialAbandoned
 	}
+	// While this request has not left a leader, its dial is an ordinary one;
+	// once it has, its dial is a backup or one after a hung leader, and it
+	// gets no backup of its own.
+	hedgeable := true
 	for {
 		c.mu.Lock()
 		l := c.leaders[addr]
@@ -217,7 +289,7 @@ func (c *coalescingTransport) dial(ctx context.Context, dial func(context.Contex
 		}
 		if l == nil {
 			g, gctx := newGuardedDial(ctx)
-			l = &leaderDial{dialc: make(chan struct{}), rtDonec: rt.donec, started: time.Now(), guard: g, refs: 1}
+			l = &leaderDial{dialc: make(chan struct{}), rtDonec: rt.donec, started: time.Now(), hedgeable: hedgeable, guard: g, refs: 1}
 			if c.leaders == nil {
 				c.leaders = make(map[string]*leaderDial)
 			}
@@ -232,21 +304,29 @@ func (c *coalescingTransport) dial(ctx context.Context, dial func(context.Contex
 		if !again {
 			return conn, err
 		}
-		// The leader's connection did not come to us, or the leader hung:
-		// take it down so that on the next round we lead rather than wait
-		// for it again. If another one has replaced it, we queue behind
-		// that one.
+		// The leader's connection did not come to us, the leader hung, or it
+		// is time for a backup dial: take it down so that on the next round
+		// we lead rather than wait for it again. If another one has replaced
+		// it, we queue behind that one. The leader itself keeps dialing.
 		c.unlead(l, addr)
+		hedgeable = false
 	}
 }
 
 // follow waits for the leader l. again: the leader has dialed and our request
-// never got the connection, or the leader hung; it is time to dial ourselves.
+// never got the connection, the leader hung, or it is time for a backup dial;
+// it is time to dial ourselves.
 func (c *coalescingTransport) follow(ctx context.Context, l *leaderDial, rt *dialRoundTrip, gotConnc chan struct{}, addr string) (conn net.Conn, err error, again bool) {
 	defer c.release(l, addr)
 	dialc, rtDonec := l.dialc, l.rtDonec
 	var retry <-chan time.Time
-	stale := time.NewTimer(time.Until(l.started.Add(coalescedDialStale)))
+	wait := coalescedDialStale
+	if l.hedgeable {
+		if d, ok := c.hist.hedgeAfter(addr); ok {
+			wait = d
+		}
+	}
+	stale := time.NewTimer(time.Until(l.started.Add(wait)))
 	defer stale.Stop()
 	// A channel variable rather than stale.C in the select: with go 1.20 in
 	// go.mod a stopped timer may leave a value in its channel.
@@ -310,6 +390,7 @@ func (c *coalescingTransport) lead(ctx context.Context, l *leaderDial, rt *dialR
 		close(l.dialc)
 		return conn, err
 	}
+	c.hist.observe(addr, time.Since(l.started))
 	close(l.dialc)
 	// A successful leader keeps its place for another coalescedDialRetry:
 	// net/http puts the connection in the pool only after the dial has

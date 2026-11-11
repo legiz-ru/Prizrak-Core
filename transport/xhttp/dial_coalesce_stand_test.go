@@ -287,8 +287,10 @@ func TestCoalesceDialsStandWrappedDial(t *testing.T) {
 }
 
 // A block after the ClientHello on a cold pool: live connections are dropped,
-// new ones hang. Two waves of sessions open no more than max-connections sockets
-// and leave none hanging; once the block is lifted, sessions go at once.
+// new ones hang. Two waves of sessions open no more than two sockets per
+// transport (the leader and a backup: after the warm-up the client has a
+// history) and leave none hanging; once the block is lifted, sessions go at
+// once.
 func TestCoalesceDialsStandBlackhole(t *testing.T) {
 	leakCheck(t)
 	setDialTimeout(t, 2*time.Second)
@@ -307,8 +309,8 @@ func TestCoalesceDialsStandBlackhole(t *testing.T) {
 		if failed, _ := sessions(client, 50, 700*time.Millisecond, 1<<10); failed != 50 {
 			t.Fatalf("wave %d: %d of 50 sessions failed, want all", wave, failed)
 		}
-		if got := relay.peak.Load(); got > 2 {
-			t.Fatalf("wave %d: %d sockets open at once, want at most 2", wave, got)
+		if got := relay.peak.Load(); got > 4 {
+			t.Fatalf("wave %d: %d sockets open at once, want at most 4", wave, got)
 		}
 		waitFor(t, "abandoned dials to end", time.Second, func() bool { return relay.open.Load() == 0 })
 	}
