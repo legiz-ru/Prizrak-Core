@@ -197,7 +197,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			}
 
 			switch network {
-			case "ws":
+			case "ws", "httpupgrade":
 				headers := make(map[string]any)
 				wsOpts := make(map[string]any)
 
@@ -205,6 +205,10 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 
 				wsOpts["path"] = query.Get("path")
 				wsOpts["headers"] = headers
+				if network == "httpupgrade" {
+					trojan["network"] = "ws"
+					wsOpts["v2ray-http-upgrade"] = true
+				}
 
 				trojan["ws-opts"] = wsOpts
 
@@ -372,6 +376,10 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 				headers := make(map[string]any)
 				wsOpts := make(map[string]any)
 				wsOpts["path"] = "/"
+				if network == "httpupgrade" {
+					vmess["network"] = "ws"
+					wsOpts["v2ray-http-upgrade"] = true
+				}
 				if host, ok := values["host"].(string); ok && host != "" {
 					headers["Host"] = host
 				}
@@ -383,8 +391,13 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 						if earlyData := query.Get("ed"); earlyData != "" {
 							med, err := strconv.Atoi(earlyData)
 							if err == nil {
-								wsOpts["max-early-data"] = med
-								wsOpts["early-data-header-name"] = "Sec-WebSocket-Protocol"
+								switch network {
+								case "ws":
+									wsOpts["max-early-data"] = med
+									wsOpts["early-data-header-name"] = "Sec-WebSocket-Protocol"
+								case "httpupgrade":
+									wsOpts["v2ray-http-upgrade-fast-open"] = true
+								}
 								query.Del("ed")
 								pathURL.RawQuery = query.Encode()
 								path = pathURL.String()
@@ -393,15 +406,10 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 						if earlyDataHeader := query.Get("eh"); earlyDataHeader != "" {
 							wsOpts["early-data-header-name"] = earlyDataHeader
 						}
-						if network == "httpupgrade" {
-							wsOpts["v2ray-http-upgrade"] = true
-							wsOpts["v2ray-http-upgrade-fast-open"] = true
-						}
 					}
 					wsOpts["path"] = path
 				}
 				wsOpts["headers"] = headers
-				vmess["network"] = "ws"
 				vmess["ws-opts"] = wsOpts
 
 			case "grpc":
