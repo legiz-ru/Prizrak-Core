@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,15 +92,130 @@ func TestRespRoundTrip(t *testing.T) {
 func TestParseResolver(t *testing.T) {
 	r, err := ParseResolver("1.1.1.1")
 	require.NoError(t, err)
-	require.Equal(t, ResolverConfig{Type: "udp", Addr: "1.1.1.1:53"}, r)
+	require.Equal(t, ResolverConfig{Type: "udp", Addr: "1.1.1.1:53", Worker: 32}, r)
 	r, err = ParseResolver("tcp://[2606:4700::1111]:5353")
 	require.NoError(t, err)
-	require.Equal(t, ResolverConfig{Type: "tcp", Addr: "[2606:4700::1111]:5353"}, r)
+	require.Equal(t, ResolverConfig{Type: "tcp", Addr: "[2606:4700::1111]:5353", Worker: 32}, r)
 	r, err = ParseResolver(":53")
 	require.NoError(t, err)
 	require.Equal(t, ":53", r.Addr)
-	for _, bad := range []string{"", "https://1.1.1.1", "1.1.1.1:0", "1.1.1.1:x"} {
+	// DoH keeps the URL as it is written, as Xray does.
+	r, err = ParseResolver("https://dns.example:8443/dns-query?x=1")
+	require.NoError(t, err)
+	require.Equal(t, ResolverConfig{Type: "https", Addr: "https://dns.example:8443/dns-query?x=1", Worker: 32}, r)
+	r, err = ParseResolver("https://1.1.1.1/dns-query")
+	require.NoError(t, err)
+	require.Equal(t, "https://1.1.1.1/dns-query", r.Addr)
+	for _, bad := range []string{"", "http://1.1.1.1/dns-query", "https:///dns-query", "https://1.1.1.1:0/x", "quic://1.1.1.1", "1.1.1.1:0", "1.1.1.1:x"} {
 		_, err := ParseResolver(bad)
+		require.Error(t, err, bad)
+	}
+}
+
+// Zone names are read as Xray-core reads them since XTLS/Xray-core#7349:
+// dots around the name are dropped, an empty label or one over 63 bytes is
+// refused when the config is read, not when the first query is packed.
+func TestDomainDots(t *testing.T) {
+	for _, name := range []string{"t.example.com.", ".t.example.com", "T.Example.Com"} {
+		d, err := NewDomain(name, 255, 63, []uint16{TypeTXT}, 0)
+		require.NoError(t, err, name)
+		require.Equal(t, "t.example.com.", strings.ToLower(d.name.String()), name)
+	}
+	d, err := NewDomain("тест.рф.", 255, 63, []uint16{TypeTXT}, 0)
+	require.NoError(t, err)
+	require.Equal(t, "xn--e1aybc.xn--p1ai.", d.name.String())
+	for _, bad := range []string{".", "..", "a..b", "a.", strings.Repeat("a", 64) + ".example.com"} {
+		if bad == "a." {
+			// one label is a name, as in Xray
+			_, err := NewDomain(bad, 255, 63, []uint16{TypeTXT}, 0)
+			require.NoError(t, err)
+			continue
+		}
+		_, err := NewDomain(bad, 255, 63, []uint16{TypeTXT}, 0)
+		require.Error(t, err, bad)
+	}
+}
+
+func TestResolverOptions(t *testing.T) {
+	cfg, err := New(Option{
+		Domains: []DomainOption{{Names: []string{"t.example.com"}}},
+		Resolvers: []ResolverOption{
+			{Addrs: []string{"1.1.1.1", "tcp://8.8.8.8"}, Worker: 3},
+			{Addrs: []string{"https://dns.example/dns-query"}},
+			{Addrs: []string{"https://dns.example/dns-query"}, TLSConfig: &TLSOption{ALPN: stringList{"h3"}}, QUICConfig: &QUICOption{Congestion: "force-brutal", BrutalUp: "100 mbps"}},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, cfg.Resolvers, 4)
+	require.Equal(t, 3, cfg.Resolvers[0].Worker)
+	require.Equal(t, 3, cfg.Resolvers[1].Worker)
+	require.Equal(t, 32, cfg.Resolvers[2].Worker)
+	require.Nil(t, cfg.Resolvers[2].TLS) // the default TLS: SNI from the URL, a Chrome hello
+	require.True(t, cfg.Resolvers[3].TLS.H3())
+	require.Equal(t, uint64(100_000_000/8), cfg.Resolvers[3].QUIC.BrutalUp)
+
+	base := func(r ResolverOption) Option {
+		return Option{Domains: []DomainOption{{Names: []string{"t.example.com"}}}, Resolvers: []ResolverOption{r}}
+	}
+	for name, r := range map[string]ResolverOption{
+		"negative worker":     {Addrs: []string{"tcp://8.8.8.8"}, Worker: -1},
+		"allow insecure":      {Addrs: []string{"https://dns.example/q"}, TLSConfig: &TLSOption{AllowInsecure: true}},
+		"bad fingerprint":     {Addrs: []string{"https://dns.example/q"}, TLSConfig: &TLSOption{Fingerprint: "netscape"}},
+		"bad pin":             {Addrs: []string{"https://dns.example/q"}, TLSConfig: &TLSOption{PinnedPeerCertSha256: stringList{"abcd"}}},
+		"bad ech":             {Addrs: []string{"https://dns.example/q"}, TLSConfig: &TLSOption{ECHConfigList: "https://1.1.1.1/dns-query"}},
+		"brutal over h3":      {Addrs: []string{"https://dns.example/q"}, TLSConfig: &TLSOption{ALPN: stringList{"h3"}}, QUICConfig: &QUICOption{Congestion: "brutal"}},
+		"force-brutal, no up": {Addrs: []string{"https://dns.example/q"}, QUICConfig: &QUICOption{Congestion: "force-brutal"}},
+		"slow brutal":         {Addrs: []string{"https://dns.example/q"}, QUICConfig: &QUICOption{Congestion: "force-brutal", BrutalUp: "500 kbps"}},
+		"bad congestion":      {Addrs: []string{"https://dns.example/q"}, QUICConfig: &QUICOption{Congestion: "cubic"}},
+		"bad profile":         {Addrs: []string{"https://dns.example/q"}, QUICConfig: &QUICOption{BBRProfile: "turbo"}},
+		"small window":        {Addrs: []string{"https://dns.example/q"}, QUICConfig: &QUICOption{MaxStreamReceiveWindow: 1000}},
+		"idle timeout":        {Addrs: []string{"https://dns.example/q"}, QUICConfig: &QUICOption{MaxIdleTimeout: 200}},
+		"keep alive":          {Addrs: []string{"https://dns.example/q"}, QUICConfig: &QUICOption{KeepAlivePeriod: 1}},
+	} {
+		_, err := New(base(r))
+		require.Error(t, err, name)
+	}
+	// brutal is fine where the QUIC settings are not used.
+	_, err = New(base(ResolverOption{Addrs: []string{"https://dns.example/q"}, QUICConfig: &QUICOption{Congestion: "brutal"}}))
+	require.NoError(t, err)
+}
+
+func TestTLSOption(t *testing.T) {
+	c, err := (&TLSOption{}).Build()
+	require.NoError(t, err)
+	require.Equal(t, "chrome", c.Fingerprint) // Chrome hello by default, as in Xray
+	require.Empty(t, c.NextProtos)
+	require.False(t, c.H3())
+
+	c, err = (&TLSOption{Fingerprint: "UNSAFE", ALPN: stringList{"h2, http/1.1"}, PinnedPeerCertSha256: stringList{strings.Repeat("ab", 32) + "," + strings.Repeat("CD:", 31) + "CD"}, VerifyPeerCertByName: stringList{"a.example, b.example"}}).Build()
+	require.NoError(t, err)
+	require.Equal(t, "", c.Fingerprint)
+	require.Equal(t, []string{"h2", "http/1.1"}, c.NextProtos)
+	require.Len(t, c.Pins, 2)
+	require.Equal(t, []string{"a.example", "b.example"}, c.VerifyNames)
+
+	var l stringList
+	require.NoError(t, l.UnmarshalText([]byte(" h3 ")))
+	require.Equal(t, stringList{"h3"}, l)
+}
+
+func TestParseBandwidth(t *testing.T) {
+	for in, want := range map[string]uint64{
+		"":          0,
+		"8":         1,
+		"800 bps":   100,
+		"1k":        125,
+		"100 mbps":  12_500_000,
+		"1.5 Gbps":  187_500_000,
+		"2 tb":      250_000_000_000,
+		" 64 kbps ": 8000,
+	} {
+		got, err := ParseBandwidth(in)
+		require.NoError(t, err, in)
+		require.Equal(t, want, got, in)
+	}
+	for _, bad := range []string{"fast", "10 mibps", "1.2.3m"} {
+		_, err := ParseBandwidth(bad)
 		require.Error(t, err, bad)
 	}
 }

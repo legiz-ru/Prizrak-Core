@@ -1,6 +1,7 @@
 package option
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/metacubex/mihomo/transport/finalmask/custom"
@@ -152,6 +153,12 @@ func TestXrayCamelCaseKeys(t *testing.T) {
 	require.Equal(t, "padding-min", kebabKey("padding-min"))
 	require.Equal(t, "custom_tables", kebabKey("custom_tables"))
 	require.Equal(t, "u64", kebabKey("u64"))
+	require.Equal(t, "disable-path-mtu-discovery", kebabKey("disablePathMTUDiscovery"))
+	require.Equal(t, "tls-config", kebabKey("tlsConfig"))
+	require.Equal(t, "pinned-peer-cert-sha256", kebabKey("pinnedPeerCertSha256"))
+	require.Equal(t, "disable-gso", kebabKey("disableGSO"))
+	require.Equal(t, "use-system-ca", kebabKey("useSystemCA"))
+	require.Equal(t, "tls-settings", kebabKey("TLSSettings"))
 
 	fm, err := (&Option{
 		TCP: []map[string]any{
@@ -184,4 +191,55 @@ func TestXrayCamelCaseKeys(t *testing.T) {
 	}}).Parse()
 	require.NoError(t, err)
 	require.True(t, fm.HasUDP())
+}
+
+// An Xray xdns block with DoH resolvers (XTLS/Xray-core#7140) decodes from
+// its camelCase JSON: tlsConfig, quicConfig and worker.
+func TestXDNSDoHFromXrayJSON(t *testing.T) {
+	mask, err := BuildUDPMask(map[string]any{"type": "xdns", "settings": map[string]any{
+		"domains": []any{map[string]any{"names": []any{"t.example.com"}, "edns0": float64(4096)}},
+		"resolvers": []any{
+			map[string]any{
+				"addrs":  []any{"https://dns.example/dns-query", "tcp://8.8.8.8"},
+				"worker": float64(4),
+				"tlsConfig": map[string]any{
+					"serverName":           "front.example",
+					"alpn":                 "h2,http/1.1",
+					"fingerprint":          "firefox",
+					"pinnedPeerCertSha256": "ab:" + strings.Repeat("cd", 31),
+					"verifyPeerCertByName": "dns.example",
+				},
+			},
+			map[string]any{
+				"addrs":     []any{"https://1.1.1.1/dns-query"},
+				"tlsConfig": map[string]any{"alpn": []any{"h3"}},
+				"quicConfig": map[string]any{
+					"congestion": "bbr", "bbrProfile": "aggressive", "maxIdleTimeout": float64(30),
+					"keepAlivePeriod": float64(10), "disablePathMTUDiscovery": true,
+					"initStreamReceiveWindow": float64(1 << 20),
+				},
+			},
+		},
+	}})
+	require.NoError(t, err)
+	cfg := mask.(*xdns.Config)
+	require.Len(t, cfg.Resolvers, 3)
+	doh := cfg.Resolvers[0]
+	require.Equal(t, "https", doh.Type)
+	require.Equal(t, "https://dns.example/dns-query", doh.Addr)
+	require.Equal(t, 4, doh.Worker)
+	require.Equal(t, "front.example", doh.TLS.ServerName)
+	require.Equal(t, []string{"h2", "http/1.1"}, doh.TLS.NextProtos)
+	require.Equal(t, "firefox", doh.TLS.Fingerprint)
+	require.Len(t, doh.TLS.Pins, 1)
+	require.Equal(t, []string{"dns.example"}, doh.TLS.VerifyNames)
+	require.Equal(t, "tcp", cfg.Resolvers[1].Type)
+	require.Equal(t, 4, cfg.Resolvers[1].Worker)
+	h3 := cfg.Resolvers[2]
+	require.True(t, h3.TLS.H3())
+	require.Equal(t, 32, h3.Worker)
+	require.Equal(t, "bbr", h3.QUIC.Congestion)
+	require.Equal(t, "aggressive", h3.QUIC.BBRProfile)
+	require.True(t, h3.QUIC.DisablePathMTUDiscovery)
+	require.Equal(t, uint64(1<<20), h3.QUIC.InitialStreamReceiveWindow)
 }

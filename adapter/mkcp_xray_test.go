@@ -3,6 +3,7 @@ package adapter
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -84,14 +85,20 @@ func TestXrayMKCPLegacyXDNS(t *testing.T) {
 	}
 	echoPort := echoServer(t)
 	port := freePort(t, "udp")
-	for _, method := range []string{"txt", "aaaa"} {
+	for _, method := range []string{"txt", "aaaa", "txt-tcp"} {
 		method := method
 		t.Run(method, func(t *testing.T) {
-			zone := "t.example.com:" + method
+			zone := "t.example.com:" + strings.TrimSuffix(method, "-tcp")
 			server := map[string]any{"udp": []any{map[string]any{"type": "xdns", "settings": map[string]any{"domains": []any{zone}}}}}
+			resolver := fmt.Sprintf("udp://127.0.0.1:%d", port)
+			if strings.HasSuffix(method, "-tcp") {
+				// The first xdns knew udp only; tcp, which the compact
+				// spelling takes here as well, goes through a relay.
+				resolver = startTCPDNSRelay(t, fmt.Sprintf("127.0.0.1:%d", port), newResolverStats())
+			}
 			client := map[string]any{"udp": []any{map[string]any{"type": "xdns", "settings": map[string]any{"resolvers": []any{
-				fmt.Sprintf("%s+udp://127.0.0.1:%d", zone, port),
-				fmt.Sprintf("%s+udp://127.0.0.1:%d", zone, port),
+				zone + "+" + resolver,
+				zone + "+" + resolver,
 			}}}}}
 			startXray(t, bin, xrayServer{proto: "vless", stream: mkcpStream(77, server), port: port, network: "udp", readyTCP: freePort(t, "tcp")})
 			proxy, err := ParseProxy(mkcpProxy(port, 77, client))

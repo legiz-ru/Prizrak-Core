@@ -102,20 +102,26 @@ func normalizeKeys(v any) any {
 
 // kebabKey puts a dash before a capital that follows a lower-case letter or
 // a digit and lowers the key: randRange to rand-range, remoteIPs to
-// remote-ips (a run of capitals stays one word).
+// remote-ips (a run of capitals stays one word). A capital that ends such a
+// run and starts a word of two or more lower-case letters begins a word of
+// its own: disablePathMTUDiscovery to disable-path-mtu-discovery.
 func kebabKey(k string) string {
 	var b strings.Builder
-	prev := rune(0)
-	for _, r := range k {
+	runes := []rune(k)
+	for i, r := range runes {
 		if unicode.IsUpper(r) {
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
-				b.WriteByte('-')
+			if i > 0 {
+				prev := runes[i-1]
+				wordAfterRun := unicode.IsUpper(prev) && i+2 < len(runes) &&
+					unicode.IsLower(runes[i+1]) && unicode.IsLower(runes[i+2])
+				if unicode.IsLower(prev) || unicode.IsDigit(prev) || wordAfterRun {
+					b.WriteByte('-')
+				}
 			}
 			b.WriteRune(unicode.ToLower(r))
 		} else {
 			b.WriteRune(r)
 		}
-		prev = r
 	}
 	return b.String()
 }

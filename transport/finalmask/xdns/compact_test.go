@@ -28,10 +28,10 @@ func TestParseCompactResolvers(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, []LegacyResolver{
-		{Zone: "auth.example.com", Type: TypeAAAA, Resolver: ResolverConfig{Type: "udp", Addr: "77.88.8.8:53"}},
-		{Zone: "auth.example.com", Type: TypeAAAA, Resolver: ResolverConfig{Type: "udp", Addr: "8.8.8.8:53"}},
-		{Zone: "t.example.com", Type: TypeTXT, Resolver: ResolverConfig{Type: "udp", Addr: "1.1.1.1:53"}},
-		{Zone: "t.example.com", Type: TypeA, Resolver: ResolverConfig{Type: "tcp", Addr: "9.9.9.9:53"}},
+		{Zone: "auth.example.com", Type: TypeAAAA, Resolver: ResolverConfig{Type: "udp", Addr: "77.88.8.8:53", Worker: 32}},
+		{Zone: "auth.example.com", Type: TypeAAAA, Resolver: ResolverConfig{Type: "udp", Addr: "8.8.8.8:53", Worker: 32}},
+		{Zone: "t.example.com", Type: TypeTXT, Resolver: ResolverConfig{Type: "udp", Addr: "1.1.1.1:53", Worker: 32}},
+		{Zone: "t.example.com", Type: TypeA, Resolver: ResolverConfig{Type: "tcp", Addr: "9.9.9.9:53", Worker: 32}},
 	}, cfg.Resolvers)
 }
 

@@ -73,6 +73,41 @@ func TestConvertsV2RayVlessMKCPXDNS(t *testing.T) {
 	assert.Empty(t, proxies)
 }
 
+// The xdns of Xray-core v26.11.9 with DoH and tcp resolvers (tlsConfig,
+// quicConfig and worker) passes through a link and an Xray JSON as it is,
+// and the proxy reads it.
+func TestConvertsXDNSResolvers(t *testing.T) {
+	fm := `{"udp":[{"type":"xdns","settings":{"domains":[{"names":["t.example.com"],"edns0":4096}],"resolvers":[` +
+		`{"addrs":["https://dns.example/dns-query"],"worker":16,"tlsConfig":{"serverName":"front.example","fingerprint":"chrome","alpn":["h2","http/1.1"],"verifyPeerCertByName":"dns.example"}},` +
+		`{"addrs":["https://1.1.1.1/dns-query"],"tlsConfig":{"alpn":["h3"]},"quicConfig":{"congestion":"bbr","bbrProfile":"standard","disablePathMTUDiscovery":true,"disableChromeParrot":true}},` +
+		`{"addrs":["tcp://8.8.8.8"],"worker":4}]}}]}`
+	link := "vless://b831381d-6324-4d53-ad4f-8cda48b30811@203.0.113.1:53?encryption=none&type=kcp&mtu=1350&tti=50&security=none&fm=" + url.QueryEscape(fm) + "#doh"
+	proxies, err := ConvertsV2Ray([]byte(link))
+	require.NoError(t, err)
+	require.Len(t, proxies, 1)
+	udp := proxies[0]["finalmask"].(map[string]any)["udp"].([]any)
+	resolvers := udp[0].(map[string]any)["settings"].(map[string]any)["resolvers"].([]any)
+	assert.Len(t, resolvers, 3)
+	assert.Contains(t, resolvers[0], "tlsConfig")
+	_, err = adapter.ParseProxy(proxies[0])
+	require.NoError(t, err)
+
+	xrayJSON := `{"remarks":"xdns doh","outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.1","port":53,"users":[{"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"none"}]}]},` +
+		`"streamSettings":{"network":"kcp","kcpSettings":{"mtu":1350,"tti":50},"security":"none","finalmask":` + fm + `}}]}`
+	proxies, err = ConvertsXrayJSON([]byte(xrayJSON))
+	require.NoError(t, err)
+	require.Len(t, proxies, 1)
+	_, err = adapter.ParseProxy(proxies[0])
+	require.NoError(t, err)
+
+	// A resolver Xray refuses is refused here too.
+	bad := `{"udp":[{"type":"xdns","settings":{"domains":[{"names":["t.example.com"]}],"resolvers":[{"addrs":["https://dns.example/q"],"tlsConfig":{"allowInsecure":true}}]}}]}`
+	proxies, err = ConvertsV2Ray([]byte("vless://b831381d-6324-4d53-ad4f-8cda48b30811@203.0.113.1:53?type=kcp&security=none&fm=" + url.QueryEscape(bad) + "#bad"))
+	require.NoError(t, err)
+	_, err = adapter.ParseProxy(proxies[0])
+	assert.Error(t, err)
+}
+
 func TestConvertsV2RayVlessTLSExtras(t *testing.T) {
 	link := "vless://b831381d-6324-4d53-ad4f-8cda48b30811@example.com:443?encryption=none&type=xhttp&path=%2Fx&host=cdn.example.com&mode=packet-up&x_padding_bytes=100-1000&extra=" + url.QueryEscape(`{"uplinkHttpMethod":"GET","xPaddingBytes":"200-300"}`) + "&security=tls&sni=example.com&fp=firefox&alpn=h2&pcs=ab%3Acd&vcn=real.example.com#x"
 	proxies, err := ConvertsV2Ray([]byte(link))

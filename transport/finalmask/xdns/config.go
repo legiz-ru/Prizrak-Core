@@ -12,6 +12,10 @@ import (
 	"github.com/metacubex/mihomo/transport/finalmask"
 )
 
+// defaultWorker is Xray's number of queries a tcp or https resolver keeps in
+// flight when the config does not say.
+const defaultWorker = 32
+
 // DomainConfig is one zone of the tunnel.
 type DomainConfig struct {
 	Name       string
@@ -46,9 +50,20 @@ type DomainOption struct {
 }
 
 // ResolverOption lists resolver addresses: "udp://1.1.1.1:53",
-// "tcp://1.1.1.1", or "1.1.1.1" for UDP on port 53.
+// "tcp://1.1.1.1", "1.1.1.1" for UDP on port 53, or the URL of a DoH server,
+// "https://dns.example/dns-query". The other settings apply to every address
+// of the entry, as Xray's resolver object.
 type ResolverOption struct {
 	Addrs []string `proxy:"addrs"`
+	// Worker is how many queries a tcp or an https resolver has in flight at
+	// once, 32 by default. Over tcp each has a connection of its own, dialed
+	// when first needed and kept for the next one.
+	Worker int `proxy:"worker,omitempty"`
+	// TLSConfig is the TLS of an https resolver, Xray's tlsConfig.
+	TLSConfig *TLSOption `proxy:"tls-config,omitempty"`
+	// QUICConfig is the QUIC of an https resolver over HTTP/3 (alpn: [h3]),
+	// Xray's quicConfig.
+	QUICConfig *QUICOption `proxy:"quic-config,omitempty"`
 }
 
 func New(o Option) (*Config, error) {
@@ -93,10 +108,38 @@ func New(o Option) (*Config, error) {
 		return nil, errors.New("xdns: domains are required")
 	}
 	for _, r := range o.Resolvers {
+		worker := r.Worker
+		if worker == 0 {
+			worker = defaultWorker
+		}
+		if worker < 0 {
+			return nil, fmt.Errorf("xdns: worker must be at least 1, got %d", worker)
+		}
+		var tlsConfig *TLSConfig
+		var quicConfig *QUICConfig
+		var err error
+		if r.TLSConfig != nil {
+			if tlsConfig, err = r.TLSConfig.Build(); err != nil {
+				return nil, err
+			}
+		}
+		if r.QUICConfig != nil {
+			if quicConfig, err = r.QUICConfig.Build(); err != nil {
+				return nil, err
+			}
+		}
 		for _, addr := range r.Addrs {
 			resolver, err := ParseResolver(addr)
 			if err != nil {
 				return nil, err
+			}
+			resolver.Worker = worker
+			if resolver.Type == "https" {
+				resolver.TLS = tlsConfig
+				resolver.QUIC = quicConfig
+				if err := resolver.checkHTTPS(); err != nil {
+					return nil, err
+				}
 			}
 			c.Resolvers = append(c.Resolvers, resolver)
 		}
@@ -111,7 +154,8 @@ func New(o Option) (*Config, error) {
 	return c, nil
 }
 
-// ParseResolver reads a resolver address, see ResolverOption.
+// ParseResolver reads a resolver address, see ResolverOption. The resolver
+// gets the default worker count and, for https, the default TLS.
 func ParseResolver(addr string) (ResolverConfig, error) {
 	var u *url.URL
 	var err error
@@ -125,8 +169,19 @@ func ParseResolver(addr string) (ResolverConfig, error) {
 	}
 	switch u.Scheme {
 	case "tcp", "udp":
+	case "https":
+		// DoH: the URL is the address, as in Xray; port 443 by default.
+		if u.Hostname() == "" {
+			return ResolverConfig{}, fmt.Errorf("xdns: resolver %q has no host", addr)
+		}
+		if port := u.Port(); port != "" {
+			if p, err := strconv.ParseUint(port, 10, 16); err != nil || p == 0 {
+				return ResolverConfig{}, fmt.Errorf("xdns: resolver address %q has no valid port", addr)
+			}
+		}
+		return ResolverConfig{Type: "https", Addr: u.String(), Worker: defaultWorker}, nil
 	default:
-		return ResolverConfig{}, fmt.Errorf("xdns: resolver %q: unknown scheme %q, want udp or tcp", addr, u.Scheme)
+		return ResolverConfig{}, fmt.Errorf("xdns: resolver %q: unknown scheme %q, want udp, tcp or https", addr, u.Scheme)
 	}
 	host, port := u.Hostname(), u.Port()
 	// An address without a host, like ":53", reaches the resolver on this
@@ -140,7 +195,7 @@ func ParseResolver(addr string) (ResolverConfig, error) {
 	if p, err := strconv.ParseUint(port, 10, 16); err != nil || p == 0 {
 		return ResolverConfig{}, fmt.Errorf("xdns: resolver address %q has no valid port", addr)
 	}
-	return ResolverConfig{Type: u.Scheme, Addr: net.JoinHostPort(host, port)}, nil
+	return ResolverConfig{Type: u.Scheme, Addr: net.JoinHostPort(host, port), Worker: defaultWorker}, nil
 }
 
 // HandleDial marks XDNS as a mask that reaches the network only through its

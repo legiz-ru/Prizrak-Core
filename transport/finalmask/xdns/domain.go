@@ -82,14 +82,21 @@ type Domain struct {
 	lenMax int
 }
 
-// absoluteASCIIName converts a configured domain, with or without a trailing
-// dot and possibly internationalised, into the absolute ASCII name that is
-// packed into queries. Every label must be non-empty and fit a DNS label, or
-// the client could not pack its first poll.
+// absoluteASCIIName converts a configured domain, possibly internationalised,
+// into the absolute ASCII name that is packed into queries. Dots around it
+// are dropped, as Xray-core does since 14df0738 (XTLS/Xray-core#7349), so
+// "t.example.com." is "t.example.com"; every label left must be non-empty
+// and fit a DNS label, or the client could not pack its first poll.
 func absoluteASCIIName(domain string) (dnsmessage.Name, error) {
-	ascii, err := idna.ToASCII(strings.TrimSuffix(domain, "."))
+	if strings.Contains(domain, "..") {
+		return dnsmessage.Name{}, errors.New("empty label")
+	}
+	ascii, err := idna.ToASCII(strings.Trim(domain, "."))
 	if err != nil {
 		return dnsmessage.Name{}, err
+	}
+	if ascii == "" {
+		return dnsmessage.Name{}, errors.New("empty domain")
 	}
 	for _, label := range strings.Split(ascii, ".") {
 		if len(label) == 0 {
