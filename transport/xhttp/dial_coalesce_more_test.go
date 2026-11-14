@@ -147,8 +147,14 @@ func TestCoalesceDialsNoLeakBlackhole(t *testing.T) {
 			t.Fatalf("round %d: %d of 30 requests failed, want all", round, failed)
 		}
 	}
-	if got := d.dials.Load(); got != 3 {
-		t.Fatalf("3 rounds of 30 requests made %d dials, want 3", got)
+	// Attempts go one after another, one per 300 ms bound, while the
+	// sessions wait (2 s per round): seven or eight per round at most, not one
+	// per request.
+	if got := d.dials.Load(); got > 3*8 {
+		t.Fatalf("3 rounds of 30 requests made %d dials, want at most one per attempt bound", got)
+	}
+	if got := d.maxOpen.Load(); got != 1 {
+		t.Fatalf("%d sockets open at once, want 1", got)
 	}
 	waitFor(t, "sockets to close", 2*time.Second, func() bool { return d.open.Load() == 0 })
 }

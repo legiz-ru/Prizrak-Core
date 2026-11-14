@@ -221,6 +221,7 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 			if err != nil {
 				return nil, err
 			}
+			raw = DialTCPUp(ctx, raw)
 			wrapped, err := wrapTLS(ctx, raw, true)
 			if err != nil {
 				_ = raw.Close()
@@ -234,6 +235,9 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 		IdleConnTimeout: ConnIdleTimeout,
 		// Requests that start together share one dial through CoalesceDials,
 		// which NewClient puts on this transport (XTLS/Xray-core#6797).
+		// DialTCPUp above marks TCP as up for it: a backup dial starts only
+		// before that mark, as in browsers, and the handshake bound counts
+		// from it and is extended while the server keeps sending bytes.
 		Protocols: protocols,
 		HTTP2:     http2Config,
 	}
