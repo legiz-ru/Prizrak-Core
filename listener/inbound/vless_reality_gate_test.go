@@ -68,7 +68,7 @@ func TestInboundVless_RealityClientFingerprints(t *testing.T) {
 
 // min-client-ver and max-client-ver are off unless set, so a client that
 // sends an old REALITY version such as 1.8.2 (plain mihomo) is accepted; set,
-// they bound the client version.
+// they bound the version of every client, ours (26.11.10) included.
 func TestInboundVless_RealityClientVersion(t *testing.T) {
 	ourVersion := [3]byte{26, 11, 10}
 	testCases := []struct {
@@ -102,6 +102,29 @@ func TestInboundVless_RealityClientVersion(t *testing.T) {
 		})
 	}
 
+	// Our client sends 26.11.10.
+	t.Run("our client", func(t *testing.T) {
+		for _, bounds := range []struct {
+			min, max string
+			accepted bool
+		}{
+			{min: "26.11.10", accepted: true},
+			{max: "26.11.10", accepted: true},
+			{min: "26.11.11"},
+			{max: "26.11.9"},
+		} {
+			reality := realityGateConfig()
+			reality.MinClientVersion = bounds.min
+			reality.MaxClientVersion = bounds.max
+			tunnel, addr := startRealityGateInbound(t, reality)
+			out := newRealityGateOutbound(t, tunnel, addr, "chrome")
+			if bounds.accepted {
+				tunnel.DoSequentialTest(t, out)
+			} else {
+				requireRealityRefused(t, out)
+			}
+		}
+	})
 }
 
 func realityGateConfig() inbound.RealityConfig {

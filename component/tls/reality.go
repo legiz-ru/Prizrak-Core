@@ -34,10 +34,11 @@ const (
 
 	// The REALITY protocol uses Xray-style release bytes as a compatibility
 	// gate. These bytes represent Mihomo's tested REALITY compatibility, not
-	// Mihomo's application version.
+	// Mihomo's application version: 26.11.10 is the Xray version that the
+	// Rust core's ferrum reports.
 	realityClientVersionMajor byte = 26
-	realityClientVersionMinor byte = 7
-	realityClientVersionPatch byte = 11
+	realityClientVersionMinor byte = 11
+	realityClientVersionPatch byte = 10
 )
 
 type RealityConfig struct {
