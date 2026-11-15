@@ -105,6 +105,7 @@ func TestConvertsXrayJSONRemnawave(t *testing.T) {
 	assert.Equal(t, "obfs-pw", ee["obfs-password"])
 	assert.Equal(t, "209715200 bps", ee["down"])
 	assert.NotContains(t, ee, "up")
+	assert.NotContains(t, ee, "disable-chrome-parrot") // the browser handshake, Xray's default
 
 	x := byName["XHTTP"]
 	assert.Equal(t, "xhttp", x["network"])
@@ -269,6 +270,31 @@ func TestConvertsXrayJSONResilience(t *testing.T) {
 	}
 	assert.False(t, IsXrayJSON([]byte("vless://x@y:1#z")))
 	assert.False(t, IsXrayJSON([]byte(base64.StdEncoding.EncodeToString([]byte("vless://x@y:1#z")))))
+}
+
+// Xray parrots Chrome's QUIC handshake in its hysteria outbound unless
+// finalmask.quicParams.disableChromeParrot is set, which becomes
+// disable-chrome-parrot.
+func TestConvertsXrayJSONHysteria2DisableChromeParrot(t *testing.T) {
+	sub := `[
+{"remarks":"default","outbounds":[{"tag":"proxy","protocol":"hysteria","settings":{"address":"a.example.com","port":443,"version":2},
+  "streamSettings":{"network":"hysteria","hysteriaSettings":{"version":2,"auth":"pw"},"security":"tls","tlsSettings":{"serverName":"a.example.com"}}}]},
+{"remarks":"enabled","outbounds":[{"tag":"proxy","protocol":"hysteria","settings":{"address":"b.example.com","port":443,"version":2},
+  "streamSettings":{"network":"hysteria","hysteriaSettings":{"version":2,"auth":"pw"},"security":"tls","tlsSettings":{"serverName":"b.example.com"},
+   "finalmask":{"quicParams":{"congestion":"bbr","disableChromeParrot":false}}}}]},
+{"remarks":"disabled","outbounds":[{"tag":"proxy","protocol":"hysteria","settings":{"address":"c.example.com","port":443,"version":2},
+  "streamSettings":{"network":"hysteria","hysteriaSettings":{"version":2,"auth":"pw"},"security":"tls","tlsSettings":{"serverName":"c.example.com"},
+   "finalmask":{"quicParams":{"disableChromeParrot":true}}}}]}
+]`
+	proxies, err := ConvertsXrayJSON([]byte(sub))
+	require.NoError(t, err)
+	require.Len(t, proxies, 3)
+	want := map[string]any{"default": nil, "enabled": nil, "disabled": true}
+	for _, p := range proxies {
+		assert.Equal(t, want[p["name"].(string)], p["disable-chrome-parrot"], p["name"])
+		_, err := adapter.ParseProxy(p)
+		require.NoError(t, err, p["name"])
+	}
 }
 
 const xdriveXrayJSON = `{"remarks":"XD","outbounds":[

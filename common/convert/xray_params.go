@@ -156,6 +156,10 @@ func applyHysteria2FinalMask(proxy map[string]any, fm map[string]any) {
 	if profile, _ := quic["bbrProfile"].(string); profile != "" {
 		proxy["bbr-profile"] = profile
 	}
+	// The browser QUIC handshake is on by default, as in Xray.
+	if disable, _ := quic["disableChromeParrot"].(bool); disable {
+		proxy["disable-chrome-parrot"] = true
+	}
 	for src, dst := range map[string]string{
 		"initStreamReceiveWindow":     "initial-stream-receive-window",
 		"maxStreamReceiveWindow":      "max-stream-receive-window",

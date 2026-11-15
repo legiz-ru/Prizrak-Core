@@ -70,6 +70,11 @@ type Hysteria2Option struct {
 	BBRProfile        string     `proxy:"bbr-profile,omitempty"`
 	UdpMTU            int        `proxy:"udp-mtu,omitempty"`
 	HandshakeTimeout  int        `proxy:"handshake-timeout,omitempty"`
+	// DisableChromeParrot turns off the browser QUIC handshake: by default
+	// the handshake looks like Chrome's (quic-go's Config.ChromeParrot), as
+	// with the official Hysteria client and Xray; with it, quic-go's own, as
+	// Xray's finalmask.quicParams.disableChromeParrot. Prizrak-Core.
+	DisableChromeParrot bool `proxy:"disable-chrome-parrot,omitempty"`
 
 	RealmOpts Hysteria2RealmOption `proxy:"realm-opts,omitempty"`
 
@@ -232,6 +237,10 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 		MaxStreamReceiveWindow:         option.MaxStreamReceiveWindow,
 		InitialConnectionReceiveWindow: option.InitialConnectionReceiveWindow,
 		MaxConnectionReceiveWindow:     option.MaxConnectionReceiveWindow,
+		// Pins Chrome's flow control windows, stream limits, idle timeout and
+		// 1250-byte packets over the values above; DialQuic gives the Transport
+		// a zero-length connection ID.
+		ChromeParrot: !option.DisableChromeParrot,
 	}
 
 	clientOptions := hysteria2.ClientOptions{

@@ -197,8 +197,32 @@ func TestConvertsV2RayHysteria2FinalMask(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", proxies[0]["obfs"])
 	assert.NotContains(t, proxies[0], "ports")
+	// The browser QUIC handshake is the default: nothing to set.
+	assert.NotContains(t, proxies[0], "disable-chrome-parrot")
 	_, err = adapter.ParseProxy(proxies[0])
 	require.NoError(t, err)
+}
+
+// quicParams.disableChromeParrot: true of a link's fm turns the browser QUIC
+// handshake off; false, or no fm, leaves it on.
+func TestConvertsV2RayHysteria2DisableChromeParrot(t *testing.T) {
+	for _, tc := range []struct {
+		fm   string
+		want any
+	}{
+		{`{"quicParams":{"disableChromeParrot":false}}`, nil},
+		{`{"quicParams":{"disableChromeParrot":true}}`, true},
+	} {
+		link := "hysteria2://letmein@example.com:443/?sni=example.com&fm=" + url.QueryEscape(tc.fm) + "#hy2"
+		proxies, err := ConvertsV2Ray([]byte(link))
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, proxies[0]["disable-chrome-parrot"], tc.fm)
+		_, err = adapter.ParseProxy(proxies[0])
+		require.NoError(t, err)
+	}
+	proxies, err := ConvertsV2Ray([]byte("hysteria2://letmein@example.com:443/?sni=example.com#hy2"))
+	require.NoError(t, err)
+	assert.NotContains(t, proxies[0], "disable-chrome-parrot")
 }
 
 func TestConvertsV2RayServerDescriptionOnEveryScheme(t *testing.T) {

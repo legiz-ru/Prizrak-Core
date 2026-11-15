@@ -1496,6 +1496,15 @@ proxies: # socks5
     #   # name-cert-verify: example.com # 仅修改证书 DNSName 校验目标，不修改 SNI
     #   # ......
     # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
+    # disable-chrome-parrot: true # Prizrak-Core, default false. By default the QUIC handshake looks like Chrome's,
+    #   as with the official Hysteria client and Xray (1250-byte Initials, 1230 over IPv6, zero-length source
+    #   connection ID, Chrome's TLS ClientHello and transport parameters, chaos protection); true sends quic-go's
+    #   own, as Xray's finalmask.quicParams.disableChromeParrot. The server needs nothing, but its certificate must
+    #   be ECDSA or RSA: Chrome offers no Ed25519, so a server with an Ed25519 certificate needs
+    #   disable-chrome-parrot: true. Chrome's initial flow control windows replace the two initial-* options
+    #   below; the max-* ones cap the auto-tuning, but values below Chrome's windows (6 MiB per stream, 15 MiB per
+    #   connection) are raised to them.
+    #   默认握手模仿 Chrome；设为 true 则使用 quic-go 原生握手。服务器证书须为 ECDSA 或 RSA（Ed25519 证书的服务器需设为 true）
     ###quic-go特殊配置项，不要随意修改除非你知道你在干什么###
     # initial-stream-receive-window： 8388608
     # max-stream-receive-window： 8388608

@@ -38,6 +38,11 @@ func DialQuic(ctx context.Context, address string, opts []dialer.Option, pDialer
 				Conn:               packetConn,
 				ConnectionIDLength: option.ConnectionIDLength,
 			}
+			if conf != nil && conf.ChromeParrot {
+				// Chrome's zero-length source connection ID. It can only be
+				// chosen per Transport, and this one carries one connection.
+				transport.ConnectionIDGenerator = quic.ZeroLengthConnectionIDGenerator{}
+			}
 			transport.SetCreatedConn(true) // auto close conn
 			transport.SetSingleUse(true)   // auto close transport
 
