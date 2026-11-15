@@ -89,6 +89,8 @@ github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
 github.com/legiz-ru/prizrak-http v0.0.0-20260930180911-da5b4c1e0882 h1:f47FEoQ3NBiQf344nnwkeODgEAOwtQbb7UiaD62JXKA=
 github.com/legiz-ru/prizrak-http v0.0.0-20260930180911-da5b4c1e0882/go.mod h1:Nxx0zZAo2AhRfanyL+fmmK6ACMtVsfpwIl1aFAik2Eg=
+github.com/legiz-ru/prizrak-quic-go v0.61.1-0.20261115185305-1bee6927e56b h1:iZ7vH6KviYmJWq5KDLiTZv0Nn3XO7DWJTdw2WWi16rM=
+github.com/legiz-ru/prizrak-quic-go v0.61.1-0.20261115185305-1bee6927e56b/go.mod h1:wajB+r3LMWwvk5YakfCu5DylUXabbRNgdyJBHJOqG8k=
 github.com/legiz-ru/prizrak-utls v0.0.0-20261111074409-d32f4d9296cf h1:LybR2wpXjiRLZUTu5N9J3CG1UTjU8l/0+sb/zH2s48c=
 github.com/legiz-ru/prizrak-utls v0.0.0-20261111074409-d32f4d9296cf/go.mod h1:fCleWyTleu20o1ixVRIesy+fZjG14LmO7YwwSMPe560=
 github.com/mdlayher/netlink v1.7.2 h1:/UtM3ofJap7Vl4QWCPDGXY8d3GIY2UGSDbK+QWmY8/g=
@@ -147,8 +149,6 @@ github.com/metacubex/protobuf-go v0.0.0-20260306035419-7ceee0674686 h1:PIXmYT2an
 github.com/metacubex/protobuf-go v0.0.0-20260306035419-7ceee0674686/go.mod h1:eQV7juxFZIdRgjMxtVqP+6BssKoTZQ1RM0fc58BsCZY=
 github.com/metacubex/qpack v0.6.0 h1:YqClGIMOpiRYLjV1qOs483Od08MdPgRnHjt90FuaAKw=
 github.com/metacubex/qpack v0.6.0/go.mod h1:lKGSi7Xk94IMvHGOmxS9eIei3bvIqpOAImEBsaOwTkA=
-github.com/metacubex/quic-go v0.61.1-0.20260727080200-2548683b76f4 h1:7oX6CpHVqoUXNyyt0MTuO5ywd1qVe1S1t3jXWMW7bYc=
-github.com/metacubex/quic-go v0.61.1-0.20260727080200-2548683b76f4/go.mod h1:KTmibo7vZo0gCxdFWrPEQ/u/RGt92mJkrXDE2Qg2/AU=
 github.com/metacubex/randv2 v0.2.0 h1:uP38uBvV2SxYfLj53kuvAjbND4RUDfFJjwr4UigMiLs=
 github.com/metacubex/randv2 v0.2.0/go.mod h1:kFi2SzrQ5WuneuoLLCMkABtiBu6VRrMrWFqSPyj2cxY=
 github.com/metacubex/restls-client-go v0.1.9 h1:QmLKwVFuAjB6rL9lQNKj8CuwHqGMJjV36oskeBPEtVs=

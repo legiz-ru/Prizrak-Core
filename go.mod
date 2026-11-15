@@ -155,3 +155,5 @@ replace google.golang.org/protobuf => github.com/metacubex/protobuf-go v0.0.0-20
 replace github.com/metacubex/utls => github.com/legiz-ru/prizrak-utls v0.0.0-20261111074409-d32f4d9296cf
 
 replace github.com/metacubex/http => github.com/legiz-ru/prizrak-http v0.0.0-20260930180911-da5b4c1e0882
+
+replace github.com/metacubex/quic-go => github.com/legiz-ru/prizrak-quic-go v0.61.1-0.20261115185305-1bee6927e56b
