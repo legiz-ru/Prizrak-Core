@@ -211,6 +211,10 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 		MaxStreamReceiveWindow:         config.MaxStreamReceiveWindow,
 		InitialConnectionReceiveWindow: config.InitialConnectionReceiveWindow,
 		MaxConnectionReceiveWindow:     config.MaxConnectionReceiveWindow,
+		// A client parroting Safari sends no max_datagram_frame_size, yet its
+		// UDP comes back in DATAGRAMs, as Hysteria's servers assume. Clients
+		// that send it are unaffected.
+		AssumePeerMaxDatagramFrameSize: 65536,
 	}
 
 	service, err := hysteria2.NewService[string](hysteria2.ServiceOptions{

@@ -397,7 +397,7 @@ func (r *DOHResolver) h3Transport(c *TLSConfig, q *QUICConfig, serverName string
 		DisablePathMTUDiscovery:        q.DisablePathMTUDiscovery,
 		// Pins the browser's windows, stream limits, idle timeout and packet
 		// size over the values above.
-		Parrot: tuicCommon.QUICParrot(q.DisableChromeParrot, c.Fingerprint),
+		Parrot: tuicCommon.QUICParrot(q.DisableChromeParrot, c.Fingerprint, len(c.ECH) > 0),
 	}
 	dial := func(_ context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 		ctx, cancel := context.WithTimeout(r.dialCtx, dialTimeout)

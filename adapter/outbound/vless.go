@@ -439,7 +439,7 @@ func (v *Vless) xdriveDialer() *xdrive.Dialer {
 			if err := v.echConfig.ClientHandle(ctx, tlsConfig); err != nil {
 				return nil, err
 			}
-			return v.dialH3QUIC(ctx, addr, tlsConfig, cfg, v.quicParrot(tlsOpts.ClientFingerprint))
+			return v.dialH3QUIC(ctx, addr, tlsConfig, cfg, v.quicParrot(tlsOpts.ClientFingerprint, v.echConfig))
 		},
 	}
 }
@@ -506,9 +506,9 @@ func (v *Vless) dialTCP(ctx context.Context, addr string) (net.Conn, error) {
 }
 
 // quicParrot is the browser the QUIC handshakes of the proxy parrot with the
-// client-fingerprint of their TLS.
-func (v *Vless) quicParrot(clientFingerprint string) quic.Parrot {
-	return common.QUICParrot(v.option.DisableChromeParrot, clientFingerprint)
+// client-fingerprint and the ECH of their TLS.
+func (v *Vless) quicParrot(clientFingerprint string, echConfig *ech.Config) quic.Parrot {
+	return common.QUICParrot(v.option.DisableChromeParrot, clientFingerprint, echConfig != nil)
 }
 
 // dialH3QUIC opens a QUIC connection of xhttp or xdrive over HTTP/3,
@@ -984,7 +984,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 					if err != nil {
 						return nil, err
 					}
-					return v.dialH3QUIC(ctx, v.addr, tlsConfig, cfg, v.quicParrot(v.option.ClientFingerprint))
+					return v.dialH3QUIC(ctx, v.addr, tlsConfig, cfg, v.quicParrot(v.option.ClientFingerprint, v.echConfig))
 				},
 				v.option.ALPN,
 				hKeepAlivePeriod,
@@ -1172,7 +1172,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 						if err != nil {
 							return nil, err
 						}
-						return v.dialH3QUIC(ctx, downloadAddr, tlsConfig, cfg, v.quicParrot(downloadClientFingerprint))
+						return v.dialH3QUIC(ctx, downloadAddr, tlsConfig, cfg, v.quicParrot(downloadClientFingerprint, downloadEchConfig))
 					},
 					downloadALPN,
 					downloadHKeepAlivePeriod,

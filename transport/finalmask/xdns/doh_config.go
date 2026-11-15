@@ -62,8 +62,9 @@ type TLSOption struct {
 	// another uTLS one by the names client-fingerprint takes, or unsafe for
 	// Go's own TLS. Over HTTP/3 it picks the browser of the QUIC handshake
 	// as a proxy's client-fingerprint does (common.QUICParrot): Firefox's
-	// names are Firefox, any other value, unsafe too, is Chrome; quic-config's
-	// disable-chrome-parrot sends quic-go's own handshake.
+	// names are Firefox, Safari's Safari unless ech-config-list is set, any
+	// other value, unsafe too, is Chrome; quic-config's disable-chrome-parrot
+	// sends quic-go's own handshake.
 	Fingerprint string `proxy:"fingerprint,omitempty"`
 	// PinnedPeerCertSha256 are hex SHA-256 sums of a certificate of the
 	// chain: the leaf passes as it is, a CA verifies the leaf.

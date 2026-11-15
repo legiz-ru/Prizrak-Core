@@ -26,6 +26,7 @@ var quicProfileXrayCases = []quicProfileXrayCase{
 	{"default", false, "", 1250, 0},
 	{"chrome", false, "chrome", 1250, 0},
 	{"firefox", false, "firefox", 1252, 3},
+	{"safari", false, "safari", 1200, 0},
 }
 
 // apply sets the case's keys on a proxy's mapping.

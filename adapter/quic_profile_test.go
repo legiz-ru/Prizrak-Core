@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 )
 
@@ -44,8 +45,9 @@ func captureFirstInitial(t *testing.T, mapping func(port int) map[string]any) (s
 }
 
 // vless parrots a browser's QUIC handshake for xhttp over HTTP/3 by default,
-// the browser of client-fingerprint (Firefox's names Firefox, any other value
-// Chrome), and quic-go's own with disable-chrome-parrot.
+// the browser of client-fingerprint (Firefox's names Firefox, Safari's Safari
+// without ECH, any other value Chrome), and quic-go's own with
+// disable-chrome-parrot.
 func TestVlessXHTTP3QUICProfile(t *testing.T) {
 	for _, tc := range []struct {
 		disable     bool
@@ -56,7 +58,7 @@ func TestVlessXHTTP3QUICProfile(t *testing.T) {
 		{false, "", 1250, 0},
 		{false, "chrome", 1250, 0},
 		{false, "firefox", 1252, 3},
-		{false, "safari", 1250, 0},
+		{false, "safari", 1200, 0},
 		{false, "ios", 1250, 0},
 		{false, "random", 1250, 0},
 	} {
@@ -77,6 +79,22 @@ func TestVlessXHTTP3QUICProfile(t *testing.T) {
 		if size != tc.size || scid != tc.scid {
 			t.Errorf("disable-chrome-parrot %v, %q: size %d, scid %d; want %d, %d", tc.disable, tc.fingerprint, size, scid, tc.size, tc.scid)
 		}
+	}
+	// The captured Safari hello has no ECH: with ech-opts, Chrome's.
+	echConfig, _, err := ech.GenECHConfig("public.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, scid := captureFirstInitial(t, func(port int) map[string]any {
+		return map[string]any{
+			"name": "vless-h3-ech", "type": "vless", "server": "127.0.0.1", "port": port, "uuid": xrayUUID,
+			"network": "xhttp", "xhttp-opts": map[string]any{"path": "/x"},
+			"tls": true, "alpn": []any{"h3"}, "servername": "localhost", "skip-cert-verify": true,
+			"client-fingerprint": "safari", "ech-opts": map[string]any{"enable": true, "config": echConfig},
+		}
+	})
+	if size != 1250 || scid != 0 {
+		t.Errorf("safari with ECH: size %d, scid %d; want Chrome's 1250, 0", size, scid)
 	}
 }
 

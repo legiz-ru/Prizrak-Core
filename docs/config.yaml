@@ -1079,9 +1079,10 @@ proxies: # socks5
     client-fingerprint: chrome
     # disable-chrome-parrot: true # Prizrak-Core, default false. With alpn: [h3] (and xdrive over h3) the QUIC
     #   handshake looks by default like the browser's of client-fingerprint, as Xray's XHTTP/3 and XDRIVE clients
-    #   do and as in hysteria2: firefox is Firefox 160, anything else (ios and random too) Chrome. true sends
-    #   quic-go's own handshake, as Xray's finalmask.quicParams.disableChromeParrot. The server's certificate must
-    #   be ECDSA or RSA: a server with an Ed25519 certificate needs disable-chrome-parrot: true.
+    #   do and as in hysteria2: firefox is Firefox 160, safari the Safari capture (Chrome's with ech-opts),
+    #   anything else (ios and random too) Chrome. true sends quic-go's own handshake, as Xray's
+    #   finalmask.quicParams.disableChromeParrot. The server's certificate must be ECDSA or RSA: a server with an
+    #   Ed25519 certificate needs disable-chrome-parrot: true.
     #   alpn: [h3] 时默认握手模仿 client-fingerprint 对应的浏览器；设为 true 则使用 quic-go 原生握手（Ed25519 证书的服务器需设为 true）
     encryption: ""
     xhttp-opts:
@@ -1327,7 +1328,8 @@ proxies: # socks5
         #     - addrs: ["udp://1.1.1.1", "tcp://8.8.8.8:53"]  # 不写协议为 udp，不写端口为 53 / udp and port 53 by default
         #     # - addrs: ["https://dns.example/dns-query"]   # DoH；worker 默认 32 / DoH; worker 32 by default
         #     #   tls-config: {alpn: [h3], fingerprint: firefox}  # alpn [h3]: DoH over HTTP/3, the QUIC handshake looks like the browser of fingerprint
-        #     #                                                   # (firefox: Firefox 160, anything else Chrome), as Xray / HTTP/3 握手默认模仿 fingerprint 对应的浏览器
+        #     #                                                   # (firefox: Firefox 160, safari: Safari without ech-config-list, anything else Chrome),
+        #     #                                                   # as Xray / HTTP/3 握手默认模仿 fingerprint 对应的浏览器
         #     #   quic-config: {disable-chrome-parrot: true}      # quic-go's own QUIC handshake / 使用 quic-go 原生握手
         #   # 早期 Xray xdns (v26.1.31 至 v26.9.9) 的紧凑写法：一行给出区域、记录类型与解析器；其线上格式与新版不同，按此写法即使用旧格式客户端，两种写法不可混用
         #   # the compact spelling of the first Xray xdns (v26.1.31 to v26.9.9): zone, record type and resolver in one string; its wire format differs from the
@@ -1513,8 +1515,8 @@ proxies: # socks5
     # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
     # disable-chrome-parrot: true # Prizrak-Core, default false. By default the QUIC handshake looks like a browser's,
     #   as with the official Hysteria client and Xray: that of client-fingerprint below, Chrome's unless it names
-    #   Firefox (1250-byte Initials, 1230 over IPv6, zero-length source connection ID, Chrome's TLS ClientHello and
-    #   transport parameters, chaos protection). true sends quic-go's own handshake, as Xray's
+    #   Firefox or Safari (1250-byte Initials, 1230 over IPv6, zero-length source connection ID, Chrome's TLS
+    #   ClientHello and transport parameters, chaos protection). true sends quic-go's own handshake, as Xray's
     #   finalmask.quicParams.disableChromeParrot. The server needs nothing, but its certificate must be ECDSA or
     #   RSA: the browsers offer no Ed25519, so a server with an Ed25519 certificate needs disable-chrome-parrot:
     #   true. The browser's initial flow control windows replace the two initial-* options below; the max-* ones
@@ -1524,8 +1526,11 @@ proxies: # socks5
     # client-fingerprint: firefox # Prizrak-Core: the browser of the QUIC handshake, as Xray's tlsSettings.fingerprint.
     #   firefox: Firefox 160 (NSS hello, neqo's transport parameters, 3-byte connection IDs, the hello cut in the
     #   middle of the SNI, Initials zero-padded to 1252 bytes, 1232 over IPv6; windows 12/24 MiB, idle timeout
-    #   30 s); anything else (chrome, empty, ios, random, ...): Chrome, as in Xray.
-    #   QUIC 握手模仿的浏览器：firefox 为 Firefox 160，其他值（包括 ios、random）为 Chrome
+    #   30 s); safari: the shape of a Safari capture on macOS 26.7.2 (Safari 27.2): GREASE, no ECH, 1200-byte
+    #   Initials of one CRYPTO frame, no max_datagram_frame_size (UDP needs a server that assumes DATAGRAM
+    #   support, as Xray and this core's listener do), windows 2/16 MiB, the idle timeout stays this proxy's;
+    #   with ech-opts it is Chrome's; anything else (chrome, empty, ios, random, ...): Chrome, as in Xray.
+    #   QUIC 握手模仿的浏览器：firefox 为 Firefox 160，safari 为 Safari 抓包的形态（有 ECH 时为 Chrome），其他值（包括 ios、random）为 Chrome
     # enable-session-resumption: true # Prizrak-Core, default false, as Xray's tlsSettings.enableSessionResumption:
     #   keep the server's TLS session tickets and resume the next QUIC connection with one. With the browser
     #   handshake each ticket is used once and the resumed hello is the browser's (Firefox's GREASE ECH grows with

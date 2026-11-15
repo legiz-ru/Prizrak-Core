@@ -145,6 +145,7 @@ var quicProfileWires = map[string]quicProfileWire{
 	"off":     {first: quicInitial{size: 1280, scidLen: -1}, zeroRTTPackets: 1},
 	"chrome":  {first: quicInitial{size: 1250, scidLen: 0}, zeroRTTPackets: 1},
 	"firefox": {first: quicInitial{size: 1252, scidLen: 3}, zeroRTTPackets: 2},
+	"safari":  {first: quicInitial{size: 1200, scidLen: 0}, zeroRTTPackets: 1},
 }
 
 // checkQUICProfileInitials checks that every connection the relay saw was made

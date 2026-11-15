@@ -253,7 +253,7 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 		// Pins the browser's flow control windows, stream limits, idle
 		// timeout and packet size over the values above; DialQuic gives the
 		// Transport the browser's connection IDs.
-		Parrot: common.QUICParrot(option.DisableChromeParrot, option.ClientFingerprint),
+		Parrot: common.QUICParrot(option.DisableChromeParrot, option.ClientFingerprint, echConfig != nil),
 	}
 
 	clientOptions := hysteria2.ClientOptions{

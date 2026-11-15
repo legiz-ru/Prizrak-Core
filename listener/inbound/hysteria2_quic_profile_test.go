@@ -31,6 +31,7 @@ var quicProfileCases = []quicProfileCase{
 	{"off", true, ""},
 	{"chrome", false, ""},
 	{"firefox", false, "firefox"},
+	{"safari", false, "safari"},
 }
 
 func TestInboundHysteria2_FirefoxParrot(t *testing.T) {

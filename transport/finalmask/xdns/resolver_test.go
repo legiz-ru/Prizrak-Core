@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/metacubex/mihomo/component/ech"
 	"github.com/metacubex/mihomo/transport/finalmask"
 
 	"github.com/metacubex/http"
@@ -958,26 +959,36 @@ func TestDoHH3Defaults(t *testing.T) {
 
 // The first Initial of an HTTP/3 resolver: Chrome's by default (1250 bytes,
 // an empty source connection ID), Firefox's with fingerprint firefox (1252
-// bytes, 3), quic-go's own with quic-config's disable-chrome-parrot.
+// bytes, 3), Safari's with safari (1200 bytes) unless ech-config-list is set,
+// quic-go's own with quic-config's disable-chrome-parrot.
 func TestDoHH3Initial(t *testing.T) {
+	echConfig, _, err := ech.GenECHConfig("public.example")
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		name        string
 		fingerprint string
+		ech         bool
 		disable     bool
 		size, scid  int
 	}{
-		{"default", "", false, 1250, 0},
-		{"chrome", "chrome", false, 1250, 0},
-		{"firefox", "firefox", false, 1252, 3},
-		{"ios", "ios", false, 1250, 0},
-		{"quic-go", "firefox", true, 1280, 0},
+		{"default", "", false, false, 1250, 0},
+		{"chrome", "chrome", false, false, 1250, 0},
+		{"firefox", "firefox", false, false, 1252, 3},
+		{"safari", "safari", false, false, 1200, 0},
+		{"safari-ech", "safari", true, false, 1250, 0},
+		{"ios", "ios", false, false, 1250, 0},
+		{"quic-go", "firefox", false, true, 1280, 0},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			capture, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 			require.NoError(t, err)
 			defer capture.Close()
-			tlsConfig, err := (&TLSOption{ALPN: stringList{"h3"}, Fingerprint: tc.fingerprint}).Build()
+			tlsOption := TLSOption{ALPN: stringList{"h3"}, Fingerprint: tc.fingerprint}
+			if tc.ech {
+				tlsOption.ECHConfigList = echConfig
+			}
+			tlsConfig, err := tlsOption.Build()
 			require.NoError(t, err)
 			quicConfig, err := (&QUICOption{DisableChromeParrot: tc.disable}).Build()
 			require.NoError(t, err)
