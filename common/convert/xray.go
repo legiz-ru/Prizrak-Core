@@ -229,6 +229,7 @@ func convertXrayOutbound(outbound xrayOutbound, name string, names map[string]in
 			}
 		}
 	}
+	applyXrayQUICParrot(proxy, stream)
 	return proxy, nil
 }
 

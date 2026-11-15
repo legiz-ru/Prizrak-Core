@@ -97,6 +97,8 @@ func finalMaskDialQUIC(ctx context.Context, fm *finalmask.FinalMask, fmDialer *f
 	transport := quic.Transport{
 		Conn:               pc,
 		ConnectionIDLength: option.ConnectionIDLength,
+		// The source connection IDs of a parroted browser, as in DialQuic.
+		ConnectionIDGenerator: quic.ParrotConnectionIDGenerator(conf),
 	}
 	transport.SetCreatedConn(true) // auto close conn
 	transport.SetSingleUse(true)   // auto close transport

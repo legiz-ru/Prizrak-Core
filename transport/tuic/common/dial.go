@@ -38,10 +38,11 @@ func DialQuic(ctx context.Context, address string, opts []dialer.Option, pDialer
 				Conn:               packetConn,
 				ConnectionIDLength: option.ConnectionIDLength,
 			}
-			if conf != nil && conf.ChromeParrot {
-				// Chrome's zero-length source connection ID. It can only be
-				// chosen per Transport, and this one carries one connection.
-				transport.ConnectionIDGenerator = quic.ZeroLengthConnectionIDGenerator{}
+			if gen := quic.ParrotConnectionIDGenerator(conf); gen != nil {
+				// The source connection IDs of the parroted browser: Chrome's
+				// are empty, Firefox's 3 bytes. They can only be chosen per
+				// Transport, and this one carries one connection.
+				transport.ConnectionIDGenerator = gen
 			}
 			transport.SetCreatedConn(true) // auto close conn
 			transport.SetSingleUse(true)   // auto close transport

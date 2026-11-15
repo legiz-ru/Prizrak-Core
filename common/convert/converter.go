@@ -102,6 +102,11 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 				hysteria2["alpn"] = strings.Split(alpn, ",")
 			}
 			hysteria2["fingerprint"] = query.Get("pinSHA256")
+			// fp picks the browser of the QUIC handshake, as
+			// tlsSettings.fingerprint does in Xray JSON.
+			if fp := query.Get("fp"); fp != "" {
+				hysteria2["client-fingerprint"] = fp
+			}
 			hysteria2["down"] = query.Get("down")
 			hysteria2["up"] = query.Get("up")
 			if realmMode {

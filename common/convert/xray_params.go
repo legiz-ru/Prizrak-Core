@@ -103,6 +103,39 @@ func applyFinalMask(proxy map[string]any, query url.Values) {
 	if block := finalMaskBlock(fm, proxy); block != nil {
 		proxy["finalmask"] = block
 	}
+	if overHTTP3(proxy) && disableChromeParrot(fm) {
+		proxy["disable-chrome-parrot"] = true
+	}
+}
+
+// overHTTP3 reports whether the proxy dials QUIC for its transport: vless over
+// xhttp or xdrive with alpn [h3].
+func overHTTP3(proxy map[string]any) bool {
+	if proxy["type"] != "vless" || (proxy["network"] != "xhttp" && proxy["network"] != "xdrive") {
+		return false
+	}
+	alpn, _ := proxy["alpn"].([]string)
+	return len(alpn) == 1 && alpn[0] == "h3"
+}
+
+// disableChromeParrot reports finalmask.quicParams.disableChromeParrot.
+func disableChromeParrot(fm map[string]any) bool {
+	quic, _ := fm["quicParams"].(map[string]any)
+	disable, _ := quic["disableChromeParrot"].(bool)
+	return disable
+}
+
+// applyXrayQUICParrot maps finalmask.quicParams.disableChromeParrot of a vless
+// proxy over HTTP/3 of an Xray JSON outbound. Xray's XHTTP/3 and XDRIVE
+// clients parrot the browser of tlsSettings.fingerprint (client-fingerprint)
+// unless it is set, and so does the core by default.
+func applyXrayQUICParrot(proxy, stream map[string]any) {
+	if !overHTTP3(proxy) {
+		return
+	}
+	if fm, ok := stream["finalmask"].(map[string]any); ok && disableChromeParrot(fm) {
+		proxy["disable-chrome-parrot"] = true
+	}
 }
 
 // applyHysteria2FinalMask maps the finalmask object of an Xray hysteria2

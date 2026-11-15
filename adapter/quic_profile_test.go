@@ -1,0 +1,80 @@
+package adapter
+
+import (
+	"context"
+	"net"
+	"net/netip"
+	"testing"
+	"time"
+
+	C "github.com/metacubex/mihomo/constant"
+)
+
+// captureFirstInitial dials proxy at a socket that never answers, whose port
+// the proxy is configured with, and returns the size and the source
+// connection ID length of the first datagram, an Initial.
+func captureFirstInitial(t *testing.T, mapping func(port int) map[string]any) (size, scid int) {
+	t.Helper()
+	capture, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Close()
+	proxy, err := ParseProxy(mapping(capture.LocalAddr().(*net.UDPAddr).Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() {
+		_, _ = proxy.DialContext(ctx, &C.Metadata{NetWork: C.TCP, DstIP: netip.MustParseAddr("127.0.0.1"), DstPort: 80})
+	}()
+	b := make([]byte, 65536)
+	_ = capture.SetReadDeadline(time.Now().Add(5 * time.Second))
+	n, _, err := capture.ReadFromUDP(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 8 || b[0]&0x80 == 0 || b[0]&0x30 != 0 {
+		t.Fatal("not a long header Initial")
+	}
+	return n, int(b[6+int(b[5])])
+}
+
+// vless parrots a browser's QUIC handshake for xhttp over HTTP/3 by default,
+// the browser of client-fingerprint (Firefox's names Firefox, any other value
+// Chrome), and quic-go's own with disable-chrome-parrot.
+func TestVlessXHTTP3QUICProfile(t *testing.T) {
+	for _, tc := range []struct {
+		disable     bool
+		fingerprint string
+		size, scid  int
+	}{
+		{true, "firefox", 1280, 0},
+		{false, "", 1250, 0},
+		{false, "chrome", 1250, 0},
+		{false, "firefox", 1252, 3},
+		{false, "safari", 1250, 0},
+		{false, "ios", 1250, 0},
+		{false, "random", 1250, 0},
+	} {
+		size, scid := captureFirstInitial(t, func(port int) map[string]any {
+			m := map[string]any{
+				"name": "vless-h3", "type": "vless", "server": "127.0.0.1", "port": port, "uuid": xrayUUID,
+				"network": "xhttp", "xhttp-opts": map[string]any{"path": "/x"},
+				"tls": true, "alpn": []any{"h3"}, "servername": "localhost", "skip-cert-verify": true,
+			}
+			if tc.fingerprint != "" {
+				m["client-fingerprint"] = tc.fingerprint
+			}
+			if tc.disable {
+				m["disable-chrome-parrot"] = true
+			}
+			return m
+		})
+		if size != tc.size || scid != tc.scid {
+			t.Errorf("disable-chrome-parrot %v, %q: size %d, scid %d; want %d, %d", tc.disable, tc.fingerprint, size, scid, tc.size, tc.scid)
+		}
+	}
+}

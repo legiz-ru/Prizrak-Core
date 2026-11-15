@@ -21,10 +21,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The hysteria2 client against Xray's hysteria inbound, with Chrome's QUIC
-// handshake (the default) and with disable-chrome-parrot, with and without
-// salamander: TCP and UDP through Xray's freedom to local
-// echo servers. Official Xray-core v26.9.8 and newer, or the fork:
+// The hysteria2 client against Xray's hysteria inbound, with each browser's
+// QUIC handshake of client-fingerprint (Chrome's by default) and with
+// disable-chrome-parrot, with and without salamander: TCP and UDP through
+// Xray's freedom to local echo servers. Official Xray-core v26.9.8 and newer,
+// or the fork:
 //
 //	XRAY_BIN=/path/to/xray go test ./listener/inbound/ -run TestHysteria2XrayServer -v
 func TestHysteria2XrayServer(t *testing.T) {
@@ -84,16 +85,17 @@ func TestHysteria2XrayServer(t *testing.T) {
 		require.NoError(t, err)
 		startXrayRealityServer(t, xrayBinary, config, readyPort)
 
-		for _, parrot := range []bool{false, true} {
-			parrot := parrot
-			t.Run(fmt.Sprintf("obfs=%s/parrot=%v", obfs, parrot), func(t *testing.T) {
+		for _, profile := range quicProfileCases {
+			profile := profile
+			t.Run(fmt.Sprintf("obfs=%s/parrot=%s", obfs, profile.name), func(t *testing.T) {
 				option := outbound.Hysteria2Option{
 					Name:                "hysteria2_xray",
 					Server:              "127.0.0.1",
 					Port:                hyPort,
 					Password:            "pw",
 					Fingerprint:         fingerprint,
-					DisableChromeParrot: !parrot,
+					DisableChromeParrot: profile.disable,
+					ClientFingerprint:   profile.fingerprint,
 				}
 				if obfs != "" {
 					option.Obfs, option.ObfsPassword = obfs, "obfs-pw"
