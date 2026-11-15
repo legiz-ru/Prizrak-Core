@@ -34,7 +34,7 @@ const dohIdleTimeout = 90 * time.Second
 // DOHResolver is DNS over HTTPS as in Xray-core since 10879a4a: up to worker
 // POSTs of application/dns-message in flight, with no User-Agent, over
 // HTTP/2 or HTTP/1.1 as ALPN picks (a Chrome Client Hello by default) or over
-// HTTP/3 when alpn is exactly h3. A 429 with Retry-After drops the queries
+// HTTP/3 when alpn is exactly h3 (a browser's QUIC handshake by default). A 429 with Retry-After drops the queries
 // until it passes.
 type DOHResolver struct {
 	workQueue
@@ -369,7 +369,9 @@ func (c utlsStateConn) ConnectionState() tls.ConnectionState {
 }
 
 // h3Transport is Xray's http3.Transport over the mask's UDP dial, with the
-// quic-config's windows, timeouts and congestion control.
+// quic-config's windows, timeouts and congestion control, and the browser's
+// QUIC handshake of the tls-config's fingerprint unless quic-config's
+// disable-chrome-parrot, as Xray's DoH client parrots.
 func (r *DOHResolver) h3Transport(c *TLSConfig, q *QUICConfig, serverName string, dialer *finalmask.Dialer) (*http3.Transport, error) {
 	if q == nil {
 		// Xray's defaults, path MTU discovery off where Xray turns it off.
@@ -393,6 +395,9 @@ func (r *DOHResolver) h3Transport(c *TLSConfig, q *QUICConfig, serverName string
 		MaxIdleTimeout:                 q.MaxIdleTimeout,
 		KeepAlivePeriod:                q.KeepAlivePeriod,
 		DisablePathMTUDiscovery:        q.DisablePathMTUDiscovery,
+		// Pins the browser's windows, stream limits, idle timeout and packet
+		// size over the values above.
+		Parrot: tuicCommon.QUICParrot(q.DisableChromeParrot, c.Fingerprint),
 	}
 	dial := func(_ context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 		ctx, cancel := context.WithTimeout(r.dialCtx, dialTimeout)
@@ -404,7 +409,12 @@ func (r *DOHResolver) h3Transport(c *TLSConfig, q *QUICConfig, serverName string
 			return nil, err
 		}
 		r.setAddr(raddr, addr)
-		transport := quic.Transport{Conn: pc}
+		transport := quic.Transport{
+			Conn: pc,
+			// The source connection IDs of the parroted browser, as in
+			// DialQuic.
+			ConnectionIDGenerator: quic.ParrotConnectionIDGenerator(cfg),
+		}
 		transport.SetCreatedConn(true) // the connection closes the socket
 		transport.SetSingleUse(true)   // and the transport
 		conn, err := transport.Dial(ctx, raddr, tlsCfg, cfg)

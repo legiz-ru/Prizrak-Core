@@ -60,7 +60,10 @@ type TLSOption struct {
 	ALPN stringList `proxy:"alpn,omitempty"`
 	// Fingerprint is the Client Hello: chrome by default, as in Xray,
 	// another uTLS one by the names client-fingerprint takes, or unsafe for
-	// Go's own TLS. HTTP/3 always uses Go's TLS.
+	// Go's own TLS. Over HTTP/3 it picks the browser of the QUIC handshake
+	// as a proxy's client-fingerprint does (common.QUICParrot): Firefox's
+	// names are Firefox, any other value, unsafe too, is Chrome; quic-config's
+	// disable-chrome-parrot sends quic-go's own handshake.
 	Fingerprint string `proxy:"fingerprint,omitempty"`
 	// PinnedPeerCertSha256 are hex SHA-256 sums of a certificate of the
 	// chain: the leaf passes as it is, a CA verifies the leaf.
@@ -209,10 +212,11 @@ type QUICOption struct {
 	MaxIdleTimeout          int64 `proxy:"max-idle-timeout,omitempty"`
 	KeepAlivePeriod         int64 `proxy:"keep-alive-period,omitempty"`
 	DisablePathMTUDiscovery bool  `proxy:"disable-path-mtu-discovery,omitempty"`
-	// DisableChromeParrot and DisableGSO are read for Xray configs; the
-	// QUIC here does not parrot Chrome and leaves GSO to quic-go.
+	// DisableChromeParrot sends quic-go's own QUIC handshake instead of the
+	// browser's of tls-config's fingerprint, as Xray's disableChromeParrot.
 	DisableChromeParrot bool `proxy:"disable-chrome-parrot,omitempty"`
-	DisableGSO          bool `proxy:"disable-gso,omitempty"`
+	// DisableGSO is read for Xray configs; GSO is left to quic-go.
+	DisableGSO bool `proxy:"disable-gso,omitempty"`
 }
 
 // QUICConfig is the built quic-config.
@@ -227,6 +231,7 @@ type QUICConfig struct {
 	MaxIdleTimeout                 time.Duration
 	KeepAlivePeriod                time.Duration
 	DisablePathMTUDiscovery        bool
+	DisableChromeParrot            bool
 }
 
 // Build checks the settings as Xray's QuicParamsConfig does; the
@@ -299,6 +304,7 @@ func (o *QUICOption) Build() (*QUICConfig, error) {
 		KeepAlivePeriod:                time.Duration(o.KeepAlivePeriod) * time.Second,
 		// As Xray: path MTU discovery only where quic-go does it well.
 		DisablePathMTUDiscovery: o.DisablePathMTUDiscovery || (runtime.GOOS != "linux" && runtime.GOOS != "windows" && runtime.GOOS != "darwin"),
+		DisableChromeParrot:     o.DisableChromeParrot,
 	}, nil
 }
 

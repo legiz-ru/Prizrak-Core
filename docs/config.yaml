@@ -1320,6 +1320,10 @@ proxies: # socks5
         #       # label-limit: 63
         #   resolvers:
         #     - addrs: ["udp://1.1.1.1", "tcp://8.8.8.8:53"]  # 不写协议为 udp，不写端口为 53 / udp and port 53 by default
+        #     # - addrs: ["https://dns.example/dns-query"]   # DoH；worker 默认 32 / DoH; worker 32 by default
+        #     #   tls-config: {alpn: [h3], fingerprint: firefox}  # alpn [h3]: DoH over HTTP/3, the QUIC handshake looks like the browser of fingerprint
+        #     #                                                   # (firefox: Firefox 160, anything else Chrome), as Xray / HTTP/3 握手默认模仿 fingerprint 对应的浏览器
+        #     #   quic-config: {disable-chrome-parrot: true}      # quic-go's own QUIC handshake / 使用 quic-go 原生握手
         #   # 早期 Xray xdns (v26.1.31 至 v26.9.9) 的紧凑写法：一行给出区域、记录类型与解析器；其线上格式与新版不同，按此写法即使用旧格式客户端，两种写法不可混用
         #   # the compact spelling of the first Xray xdns (v26.1.31 to v26.9.9): zone, record type and resolver in one string; its wire format differs from the
         #   # current one, so this spelling gets the client of that time, for servers of that time; the two spellings do not mix (client side only)

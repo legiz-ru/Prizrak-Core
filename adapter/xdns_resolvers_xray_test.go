@@ -25,7 +25,9 @@ import (
 // The xdns client of Prizrak-Core against Xray-core as the xdns server, with
 // the resolvers of XTLS/Xray-core 10879a4a (DoH) and 14df0738 (DNS over TCP
 // with workers) between them: each is a server in the test that passes the
-// queries to Xray's UDP port, as a public resolver would.
+// queries to Xray's UDP port, as a public resolver would. DoH over HTTP/3
+// sends the browser's QUIC handshake of the fingerprint, whose first Initial
+// the relay measures.
 //
 //	XRAY_BIN=/path/to/xray go test ./adapter/ -run TestXrayXDNSResolvers -v
 
@@ -37,6 +39,23 @@ type resolverStats struct {
 	mu        sync.Mutex
 	snis      map[string]bool
 	protos    map[int]bool
+	// initial is the size of the first datagram an HTTP/3 resolver got, the
+	// client's first Initial.
+	initial atomic.Int32
+}
+
+// firstDatagram records in initial the size of the first datagram read.
+type firstDatagram struct {
+	net.PacketConn
+	initial *atomic.Int32
+}
+
+func (c firstDatagram) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(b)
+	if err == nil {
+		c.initial.CompareAndSwap(0, int32(n))
+	}
+	return n, addr, err
 }
 
 func newResolverStats() *resolverStats {
@@ -112,7 +131,7 @@ func startDoHRelay(t *testing.T, certFile, keyFile string, h3 bool, xdnsServer s
 				},
 			}),
 		}
-		go func() { _ = srv.Serve(pc) }()
+		go func() { _ = srv.Serve(firstDatagram{PacketConn: pc, initial: &stats.initial}) }()
 		t.Cleanup(func() {
 			_ = srv.Close()
 			_ = pc.Close()
@@ -214,6 +233,7 @@ func TestXrayXDNSResolvers(t *testing.T) {
 		resolver func(t *testing.T, xdnsServer string, stats *resolverStats) map[string]any
 		proto    int // the HTTP version the DoH server must see, 0 for tcp
 		worker   int
+		initial  int // the size of the first Initial over HTTP/3
 	}
 	resolvers := []resolverCase{
 		{name: "doh-h2", proto: 2, worker: 8, resolver: func(t *testing.T, xdnsServer string, stats *resolverStats) map[string]any {
@@ -224,12 +244,29 @@ func TestXrayXDNSResolvers(t *testing.T) {
 				"tls-config": map[string]any{"server-name": "front.example", "pinned-peer-cert-sha256": pin},
 			}
 		}},
-		{name: "doh-h3", proto: 3, worker: 8, resolver: func(t *testing.T, xdnsServer string, stats *resolverStats) map[string]any {
+		// Chrome's QUIC handshake by default, Firefox's by fingerprint,
+		// quic-go's own with disable-chrome-parrot.
+		{name: "doh-h3", proto: 3, worker: 8, initial: 1250, resolver: func(t *testing.T, xdnsServer string, stats *resolverStats) map[string]any {
 			return map[string]any{
 				"addrs":       []any{startDoHRelay(t, certFile, keyFile, true, xdnsServer, stats)},
 				"worker":      8,
 				"tls-config":  map[string]any{"server-name": "front.example", "pinned-peer-cert-sha256": pin, "alpn": []any{"h3"}},
 				"quic-config": map[string]any{"congestion": "bbr", "max-idle-timeout": 30},
+			}
+		}},
+		{name: "doh-h3-firefox", proto: 3, worker: 8, initial: 1252, resolver: func(t *testing.T, xdnsServer string, stats *resolverStats) map[string]any {
+			return map[string]any{
+				"addrs":      []any{startDoHRelay(t, certFile, keyFile, true, xdnsServer, stats)},
+				"worker":     8,
+				"tls-config": map[string]any{"server-name": "front.example", "pinned-peer-cert-sha256": pin, "alpn": []any{"h3"}, "fingerprint": "firefox"},
+			}
+		}},
+		{name: "doh-h3-quic-go", proto: 3, worker: 8, initial: 1280, resolver: func(t *testing.T, xdnsServer string, stats *resolverStats) map[string]any {
+			return map[string]any{
+				"addrs":       []any{startDoHRelay(t, certFile, keyFile, true, xdnsServer, stats)},
+				"worker":      8,
+				"tls-config":  map[string]any{"server-name": "front.example", "pinned-peer-cert-sha256": pin, "alpn": []any{"h3"}},
+				"quic-config": map[string]any{"disable-chrome-parrot": true},
 			}
 		}},
 		{name: "tcp-worker", worker: 4, resolver: func(t *testing.T, xdnsServer string, stats *resolverStats) map[string]any {
@@ -300,6 +337,9 @@ func TestXrayXDNSResolvers(t *testing.T) {
 				}
 				if n := stats.conns.Load(); rc.proto != 0 && n > 4 {
 					t.Fatalf("%d TLS connections to a DoH resolver", n)
+				}
+				if n := stats.initial.Load(); rc.initial != 0 && int(n) != rc.initial {
+					t.Fatalf("the first Initial was %d bytes, want %d", n, rc.initial)
 				}
 				stats.mu.Lock()
 				defer stats.mu.Unlock()

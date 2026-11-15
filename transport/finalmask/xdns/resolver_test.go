@@ -349,6 +349,7 @@ type dohRequest struct {
 	proto              int
 	sni                string
 	grease             bool
+	ech                bool // an ECH extension, GREASE here
 }
 
 // dohLog collects the requests of a test DoH server.
@@ -357,19 +358,29 @@ type dohLog struct {
 	requests []dohRequest
 	snis     []string
 	grease   []bool
+	echs     []bool
 }
 
-func (l *dohLog) hello(sni string, ciphers []uint16) {
+// hello records a ClientHello: its SNI, whether its cipher suites have a
+// GREASE value, and whether extensions, when known, have ECH.
+func (l *dohLog) hello(sni string, ciphers, extensions []uint16) {
 	grease := false
 	for _, c := range ciphers {
 		if c&0x0f0f == 0x0a0a && c>>8 == c&0xff {
 			grease = true
 		}
 	}
+	ech := false
+	for _, e := range extensions {
+		if e == 0xfe0d {
+			ech = true
+		}
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.snis = append(l.snis, sni)
 	l.grease = append(l.grease, grease)
+	l.echs = append(l.echs, ech)
 }
 
 func (l *dohLog) add(r dohRequest) {
@@ -378,6 +389,7 @@ func (l *dohLog) add(r dohRequest) {
 	if len(l.snis) > 0 {
 		r.sni = l.snis[len(l.snis)-1]
 		r.grease = l.grease[len(l.grease)-1]
+		r.ech = l.echs[len(l.echs)-1]
 	}
 	l.requests = append(l.requests, r)
 }
@@ -442,7 +454,7 @@ func startStdDoH(t *testing.T, cert *testCert, udpServer string, h2 bool, log *d
 	srv.TLS = &stdtls.Config{
 		Certificates: []stdtls.Certificate{pair},
 		GetConfigForClient: func(hello *stdtls.ClientHelloInfo) (*stdtls.Config, error) {
-			log.hello(hello.ServerName, hello.CipherSuites)
+			log.hello(hello.ServerName, hello.CipherSuites, nil)
 			return nil, nil
 		},
 	}
@@ -477,7 +489,7 @@ func startH3DoH(t *testing.T, cert *testCert, udpServer string, log *dohLog) str
 		TLSConfig: http3.ConfigureTLSConfig(&tls.Config{
 			Certificates: []tls.Certificate{pair},
 			GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-				log.hello(hello.ServerName, hello.CipherSuites)
+				log.hello(hello.ServerName, hello.CipherSuites, hello.Extensions)
 				return nil, nil
 			},
 		}),
@@ -517,7 +529,10 @@ func roundTrip(t *testing.T, client, server net.PacketConn, sizes []int) {
 // The DoH resolver of 10879a4a through a DoH server in front of the xdns
 // server: HTTP/2 and HTTP/1.1 as ALPN picks, HTTP/3 with alpn h3; the SNI
 // fronts (server-name), the HTTP request names the URL's host, no
-// User-Agent goes out and the hello is Chrome's unless unsafe.
+// User-Agent goes out and the hello is Chrome's unless unsafe. Over HTTP/3
+// the QUIC handshake is the browser's of the fingerprint, Chrome's by default
+// (unsafe too) or Firefox's, each with a GREASE ECH and no GREASE suite, and
+// Go's, with neither, with disable-chrome-parrot.
 func TestDoHRoundTrip(t *testing.T) {
 	cert := newTestCert(t)
 	cases := []struct {
@@ -525,8 +540,10 @@ func TestDoHRoundTrip(t *testing.T) {
 		h3          bool
 		h2          bool
 		tls         TLSOption
+		quic        *QUICOption
 		wantProto   int
 		wantGrease  bool
+		wantECH     bool // checked over HTTP/3
 		wantSNI     string
 		urlHostname string
 	}{
@@ -534,7 +551,10 @@ func TestDoHRoundTrip(t *testing.T) {
 		{name: "h1-server-chrome", h2: false, tls: TLSOption{}, wantProto: 1, wantGrease: true, wantSNI: "dns.example", urlHostname: "dns.example"},
 		{name: "h2-unsafe", h2: true, tls: TLSOption{Fingerprint: "unsafe", ServerName: "front.example"}, wantProto: 2, wantGrease: false, wantSNI: "front.example"},
 		{name: "h1-unsafe-alpn", h2: true, tls: TLSOption{Fingerprint: "unsafe", ALPN: stringList{"http/1.1"}, ServerName: "front.example"}, wantProto: 1, wantGrease: false, wantSNI: "front.example"},
-		{name: "h3-fronted", h3: true, tls: TLSOption{ALPN: stringList{"h3"}, ServerName: "front.example"}, wantProto: 3, wantGrease: false, wantSNI: "front.example"},
+		{name: "h3-fronted", h3: true, tls: TLSOption{ALPN: stringList{"h3"}, ServerName: "front.example"}, wantProto: 3, wantECH: true, wantSNI: "front.example"},
+		{name: "h3-unsafe", h3: true, tls: TLSOption{Fingerprint: "unsafe", ALPN: stringList{"h3"}, ServerName: "front.example"}, wantProto: 3, wantECH: true, wantSNI: "front.example"},
+		{name: "h3-firefox", h3: true, tls: TLSOption{Fingerprint: "firefox", ALPN: stringList{"h3"}, ServerName: "front.example"}, wantProto: 3, wantECH: true, wantSNI: "front.example"},
+		{name: "h3-quic-go", h3: true, tls: TLSOption{ALPN: stringList{"h3"}, ServerName: "front.example"}, quic: &QUICOption{DisableChromeParrot: true}, wantProto: 3, wantSNI: "front.example"},
 	}
 	for _, c := range cases {
 		c := c
@@ -564,7 +584,7 @@ func TestDoHRoundTrip(t *testing.T) {
 			tlsOption.PinnedPeerCertSha256 = stringList{pinOf(cert.leafDER)}
 			clientCfg, err := New(Option{
 				Domains:   []DomainOption{{Names: []string{"t.example.com"}, Types: []int{16}, EDNS0: 4096}},
-				Resolvers: []ResolverOption{{Addrs: []string{url}, Worker: 4, TLSConfig: &tlsOption}},
+				Resolvers: []ResolverOption{{Addrs: []string{url}, Worker: 4, TLSConfig: &tlsOption, QUICConfig: c.quic}},
 			})
 			require.NoError(t, err)
 			client, err := clientCfg.WrapPacketConnClient(context.Background(), nil, &finalmask.Destination{Host: "ignored.example", Port: 443}, dialer)
@@ -587,7 +607,10 @@ func TestDoHRoundTrip(t *testing.T) {
 				require.Equal(t, 0, r.userAgents, "a User-Agent was sent")
 				require.Equal(t, c.wantProto, r.proto)
 				require.Equal(t, c.wantSNI, r.sni)
-				require.Equal(t, c.wantGrease, r.grease, "Chrome's hello has GREASE, Go's has not")
+				require.Equal(t, c.wantGrease, r.grease, "Chrome's TCP hello has a GREASE suite, Go's has not")
+				if c.h3 {
+					require.Equal(t, c.wantECH, r.ech, "the browsers' QUIC hellos have a GREASE ECH, Go's has not")
+				}
 			}
 		})
 	}
@@ -931,6 +954,49 @@ func TestDoHH3Defaults(t *testing.T) {
 	quicConfig := r.(*DOHResolver).client.Transport.(*http3.Transport).QUICConfig
 	require.Equal(t, defaults.DisablePathMTUDiscovery, quicConfig.DisablePathMTUDiscovery)
 	require.Equal(t, runtime.GOOS != "linux" && runtime.GOOS != "windows" && runtime.GOOS != "darwin", defaults.DisablePathMTUDiscovery)
+}
+
+// The first Initial of an HTTP/3 resolver: Chrome's by default (1250 bytes,
+// an empty source connection ID), Firefox's with fingerprint firefox (1252
+// bytes, 3), quic-go's own with quic-config's disable-chrome-parrot.
+func TestDoHH3Initial(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		fingerprint string
+		disable     bool
+		size, scid  int
+	}{
+		{"default", "", false, 1250, 0},
+		{"chrome", "chrome", false, 1250, 0},
+		{"firefox", "firefox", false, 1252, 3},
+		{"ios", "ios", false, 1250, 0},
+		{"quic-go", "firefox", true, 1280, 0},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			capture, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			require.NoError(t, err)
+			defer capture.Close()
+			tlsConfig, err := (&TLSOption{ALPN: stringList{"h3"}, Fingerprint: tc.fingerprint}).Build()
+			require.NoError(t, err)
+			quicConfig, err := (&QUICOption{DisableChromeParrot: tc.disable}).Build()
+			require.NoError(t, err)
+			r, err := NewDOHResolver(context.Background(), ResolverConfig{
+				Type: "https", Addr: "https://" + capture.LocalAddr().String() + "/dns-query", Worker: 1,
+				TLS: tlsConfig, QUIC: quicConfig,
+			}, localDialer())
+			require.NoError(t, err)
+			defer r.Close()
+			r.Send([]byte{1, 2, 3})
+			b := make([]byte, 65536)
+			require.NoError(t, capture.SetReadDeadline(time.Now().Add(5*time.Second)))
+			n, _, err := capture.ReadFromUDP(b)
+			require.NoError(t, err)
+			require.True(t, n > 7 && b[0]&0x80 != 0 && b[0]&0x30 == 0, "a long header Initial")
+			require.Equal(t, tc.size, n)
+			require.Equal(t, tc.scid, int(b[6+int(b[5])]), "source connection ID")
+		})
+	}
 }
 
 // A tcp resolver bounds its dial; its context carries the caller's values
