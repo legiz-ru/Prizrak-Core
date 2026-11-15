@@ -2634,6 +2634,11 @@ listeners:
     #     - 0123456789abcdef
     #   server-names:
     #     - test.com
+    #   # 客户端版本范围 x.y.z（每段 0-255），选填；不填则接受任意版本 / client version bounds, x.y.z (0-255 each), optional; unset accepts any version
+    #   # min-client-ver: 26.11.10
+    #   # max-client-ver: 26.11.10
+    #   # 为 true 时只接受通过 X25519MLKEM768 认证的客户端（同 Xray 上游）；默认 false 时，不提供 X25519MLKEM768 的 Client Hello（ios、edge 等旧指纹）也可用 X25519 认证 / true accepts only clients that authenticate through X25519MLKEM768, as upstream Xray does; with the default false, a Client Hello that offers no X25519MLKEM768 (old fingerprints such as ios or edge) authenticates with X25519
+    #   require-mlkem: false
     #   #下列两个 limit 为选填，可对未通过验证的回落连接限速，bytesPerSec 默认为 0 即不启用
     #   #回落限速是一种特征，不建议启用，如果您是面板/一键脚本开发者，务必让这些参数随机化
     #   limit-fallback-upload:
@@ -2857,6 +2862,11 @@ listeners:
         - 0123456789abcdef
       server-names:
         - test.com
+      # 客户端版本范围 x.y.z（每段 0-255），选填；不填则接受任意版本 / client version bounds, x.y.z (0-255 each), optional; unset accepts any version
+      # min-client-ver: 26.11.10
+      # max-client-ver: 26.11.10
+      # 为 true 时只接受通过 X25519MLKEM768 认证的客户端（同 Xray 上游）；默认 false 时，不提供 X25519MLKEM768 的 Client Hello（ios、edge 等旧指纹）也可用 X25519 认证 / true accepts only clients that authenticate through X25519MLKEM768, as upstream Xray does; with the default false, a Client Hello that offers no X25519MLKEM768 (old fingerprints such as ios or edge) authenticates with X25519
+      require-mlkem: false
       #下列两个 limit 为选填，可对未通过验证的回落连接限速，bytesPerSec 默认为 0 即不启用
       #回落限速是一种特征，不建议启用，如果您是面板/一键脚本开发者，务必让这些参数随机化
       limit-fallback-upload:
@@ -3042,6 +3052,11 @@ listeners:
     #     - 0123456789abcdef
     #   server-names:
     #     - test.com
+    #   # 客户端版本范围 x.y.z（每段 0-255），选填；不填则接受任意版本 / client version bounds, x.y.z (0-255 each), optional; unset accepts any version
+    #   # min-client-ver: 26.11.10
+    #   # max-client-ver: 26.11.10
+    #   # 为 true 时只接受通过 X25519MLKEM768 认证的客户端（同 Xray 上游）；默认 false 时，不提供 X25519MLKEM768 的 Client Hello（ios、edge 等旧指纹）也可用 X25519 认证 / true accepts only clients that authenticate through X25519MLKEM768, as upstream Xray does; with the default false, a Client Hello that offers no X25519MLKEM768 (old fingerprints such as ios or edge) authenticates with X25519
+    #   require-mlkem: false
     #   #下列两个 limit 为选填，可对未通过验证的回落连接限速，bytesPerSec 默认为 0 即不启用
     #   #回落限速是一种特征，不建议启用，如果您是面板/一键脚本开发者，务必让这些参数随机化
     #   limit-fallback-upload:

@@ -38,6 +38,7 @@ type Config struct {
 	MinClientVersion  string
 	MaxClientVersion  string
 	MaxTimeDifference int
+	RequireMLKEM      bool
 	Mldsa65Seed       string
 	Show              bool
 	MasterKeyLog      string
@@ -85,18 +86,20 @@ func (c Config) Build(tunnel C.Tunnel) (*Builder, error) {
 	}
 	realityConfig.PrivateKey = privateKey
 
-	realityConfig.MinClientVer, err = parseClientVersion(c.MinClientVersion, []byte{26, 3, 27}, true)
+	// Unset bounds stay nil, so any client version is accepted.
+	realityConfig.MinClientVer, err = parseClientVersion(c.MinClientVersion)
 	if err != nil {
 		return nil, fmt.Errorf("invalid min-client-ver: %w", err)
 	}
-	if c.MaxClientVersion != "" {
-		realityConfig.MaxClientVer, err = parseClientVersion(c.MaxClientVersion, nil, false)
-		if err != nil {
-			return nil, fmt.Errorf("invalid max-client-ver: %w", err)
-		}
+	realityConfig.MaxClientVer, err = parseClientVersion(c.MaxClientVersion)
+	if err != nil {
+		return nil, fmt.Errorf("invalid max-client-ver: %w", err)
 	}
 
 	realityConfig.MaxTimeDiff = time.Duration(c.MaxTimeDifference) * time.Millisecond
+	// When false, a Client Hello that offers no X25519MLKEM768 at all may
+	// authenticate with its X25519 key share.
+	realityConfig.RequireMLKEM = c.RequireMLKEM
 
 	realityConfig.ShortIds = make(map[[8]byte]bool)
 	if len(c.ShortID) == 0 {
@@ -185,9 +188,11 @@ func normalizeTarget(typeName, target string) (string, string, error) {
 	return typeName, target, nil
 }
 
-func parseClientVersion(value string, defaultValue []byte, enforceFloor bool) ([]byte, error) {
+// parseClientVersion parses an Xray-style x.y.z client version, each
+// component 0-255. An empty value is no bound (nil).
+func parseClientVersion(value string) ([]byte, error) {
 	if value == "" {
-		return append([]byte(nil), defaultValue...), nil
+		return nil, nil
 	}
 	parts := strings.Split(value, ".")
 	if len(parts) != 3 {
@@ -201,22 +206,7 @@ func parseClientVersion(value string, defaultValue []byte, enforceFloor bool) ([
 		}
 		version[i] = byte(component)
 	}
-	if enforceFloor && compareVersion(version, []byte{26, 3, 27}) < 0 {
-		return nil, errors.New("version must be at least 26.3.27")
-	}
 	return version, nil
-}
-
-func compareVersion(left, right []byte) int {
-	for i := 0; i < len(left) && i < len(right); i++ {
-		if left[i] < right[i] {
-			return -1
-		}
-		if left[i] > right[i] {
-			return 1
-		}
-	}
-	return len(left) - len(right)
 }
 
 func (b Builder) NewListener(l net.Listener) net.Listener {

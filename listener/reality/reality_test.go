@@ -32,9 +32,10 @@ func TestConfigBuildAppliesXrayVersionPolicy(t *testing.T) {
 		wantMax []byte
 		wantErr bool
 	}{
-		{name: "default minimum", wantMin: []byte{26, 3, 27}},
-		{name: "explicit bounds", min: "26.7.11", max: "27.0.0", wantMin: []byte{26, 7, 11}, wantMax: []byte{27, 0, 0}},
-		{name: "minimum below safety floor", min: "26.3.26", wantErr: true},
+		{name: "unset bounds accept any version"},
+		{name: "explicit bounds", min: "26.11.10", max: "27.0.0", wantMin: []byte{26, 11, 10}, wantMax: []byte{27, 0, 0}},
+		{name: "old minimum", min: "1.8.2", wantMin: []byte{1, 8, 2}},
+		{name: "full range", min: "0.0.0", max: "255.255.255", wantMin: []byte{0, 0, 0}, wantMax: []byte{255, 255, 255}},
 		{name: "minimum missing component", min: "26.3", wantErr: true},
 		{name: "maximum missing component", max: "26.7", wantErr: true},
 		{name: "component overflow", min: "26.300.1", wantErr: true},
@@ -54,13 +55,26 @@ func TestConfigBuildAppliesXrayVersionPolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := builder.realityConfig.MinClientVer; !bytesEqual(got, test.wantMin) {
+			// utls skips a bound only when it is nil.
+			if got := builder.realityConfig.MinClientVer; !bytesEqual(got, test.wantMin) || (got == nil) != (test.wantMin == nil) {
 				t.Fatalf("MinClientVer = %v, want %v", got, test.wantMin)
 			}
-			if got := builder.realityConfig.MaxClientVer; !bytesEqual(got, test.wantMax) {
+			if got := builder.realityConfig.MaxClientVer; !bytesEqual(got, test.wantMax) || (got == nil) != (test.wantMax == nil) {
 				t.Fatalf("MaxClientVer = %v, want %v", got, test.wantMax)
 			}
 		})
+	}
+}
+
+func TestConfigBuildRequireMLKEM(t *testing.T) {
+	for _, requireMLKEM := range []bool{false, true} {
+		builder, err := validConfig(func(c *Config) { c.RequireMLKEM = requireMLKEM }).Build(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := builder.realityConfig.RequireMLKEM; got != requireMLKEM {
+			t.Fatalf("RequireMLKEM = %v, want %v", got, requireMLKEM)
+		}
 	}
 }
 

@@ -104,6 +104,9 @@ func TestVLESSRealityXrayInterop(t *testing.T) {
 	}
 }
 
+// An Xray client reaches our REALITY server by default and with
+// require-mlkem when its fingerprint sends X25519MLKEM768 (Xray's default,
+// chrome); without it (ios) only by default.
 func TestVLESSRealityXrayClientToMihomoServer(t *testing.T) {
 	xrayBinary := os.Getenv("XRAY_BINARY")
 	if xrayBinary == "" {
@@ -118,33 +121,61 @@ func TestVLESSRealityXrayClientToMihomoServer(t *testing.T) {
 	_, mldsa65Verify, err := utls.RealityMldsa65KeyFromSeed(mldsa65Seed)
 	require.NoError(t, err)
 
-	in, err := inbound.NewVless(&inbound.VlessOption{
-		BaseOption: inbound.BaseOption{NameStr: "vless_reality_xray_client", Listen: "127.0.0.1", Port: "0"},
-		Users:      []inbound.VlessUser{{Username: "xray", UUID: xrayRealityPlainUUID}},
-		RealityConfig: inbound.RealityConfig{
-			Dest:        origin.addr,
-			PrivateKey:  base64.RawURLEncoding.EncodeToString(privateKey.Bytes()),
-			ShortID:     []string{xrayRealityShortID},
-			ServerNames: []string{"localhost"},
-			Mldsa65Seed: base64.RawURLEncoding.EncodeToString(mldsa65Seed),
-			Show:        true,
-		},
-	})
-	require.NoError(t, err)
-	require.NoError(t, in.Listen(vmessInteropDirectTunnel(t)))
-	t.Cleanup(func() { _ = in.Close() })
-	mihomoPort := vmessInteropParsePort(t, vmessInteropPort(in.Address()))
+	testCases := []struct {
+		name         string
+		fingerprint  string
+		requireMLKEM bool
+		accepted     bool
+	}{
+		{name: "chrome", fingerprint: "chrome", accepted: true},
+		{name: "chrome require-mlkem", fingerprint: "chrome", requireMLKEM: true, accepted: true},
+		{name: "ios", fingerprint: "ios", accepted: true},
+		{name: "ios require-mlkem", fingerprint: "ios", requireMLKEM: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			in, err := inbound.NewVless(&inbound.VlessOption{
+				BaseOption: inbound.BaseOption{NameStr: "vless_reality_xray_client", Listen: "127.0.0.1", Port: "0"},
+				Users:      []inbound.VlessUser{{Username: "xray", UUID: xrayRealityPlainUUID}},
+				RealityConfig: inbound.RealityConfig{
+					Dest:         origin.addr,
+					PrivateKey:   base64.RawURLEncoding.EncodeToString(privateKey.Bytes()),
+					ShortID:      []string{xrayRealityShortID},
+					ServerNames:  []string{"localhost"},
+					Mldsa65Seed:  base64.RawURLEncoding.EncodeToString(mldsa65Seed),
+					RequireMLKEM: testCase.requireMLKEM,
+					Show:         true,
+				},
+			})
+			require.NoError(t, err)
+			require.NoError(t, in.Listen(vmessInteropDirectTunnel(t)))
+			t.Cleanup(func() { _ = in.Close() })
+			mihomoPort := vmessInteropParsePort(t, vmessInteropPort(in.Address()))
 
-	xrayPort := vmessInteropReserveTCPPort(t)
-	config := xrayRealityClientConfig(t, xrayPort.Port(), mihomoPort, echoAddr, privateKey.PublicKey().Bytes(), mldsa65Verify)
-	startXrayRealityServer(t, xrayBinary, config, xrayPort)
+			xrayPort := vmessInteropReserveTCPPort(t)
+			config := xrayRealityClientConfigWithFingerprint(t, xrayPort.Port(), mihomoPort, echoAddr, privateKey.PublicKey().Bytes(), mldsa65Verify, testCase.fingerprint)
+			startXrayRealityServer(t, xrayBinary, config, xrayPort)
 
-	vmessInteropRoundTripWithRetry(t, func() (net.Conn, error) {
-		return net.Dial("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(xrayPort.Port())))
-	}, 128*1024)
+			dial := func() (net.Conn, error) {
+				return net.Dial("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(xrayPort.Port())))
+			}
+			if testCase.accepted {
+				vmessInteropRoundTripWithRetry(t, dial, 128*1024)
+				return
+			}
+			conn, err := dial()
+			require.NoError(t, err)
+			require.Error(t, vmessInteropRoundTripConn(conn, 1024), "the Xray client reached the echo server through a REALITY server that should have turned it away")
+		})
+	}
 }
 
 func xrayRealityClientConfig(t *testing.T, listenPort, serverPort int, targetAddr string, publicKey, mldsa65Verify []byte) []byte {
+	t.Helper()
+	return xrayRealityClientConfigWithFingerprint(t, listenPort, serverPort, targetAddr, publicKey, mldsa65Verify, "chrome")
+}
+
+func xrayRealityClientConfigWithFingerprint(t *testing.T, listenPort, serverPort int, targetAddr string, publicKey, mldsa65Verify []byte, fingerprint string) []byte {
 	t.Helper()
 	targetHost, targetPort, err := net.SplitHostPort(targetAddr)
 	require.NoError(t, err)
@@ -170,7 +201,7 @@ func xrayRealityClientConfig(t *testing.T, listenPort, serverPort int, targetAdd
 				"security": "reality",
 				"realitySettings": map[string]any{
 					"show":          true,
-					"fingerprint":   "chrome",
+					"fingerprint":   fingerprint,
 					"serverName":    "localhost",
 					"publicKey":     base64.RawURLEncoding.EncodeToString(publicKey),
 					"shortId":       xrayRealityShortID,

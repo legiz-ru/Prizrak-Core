@@ -13,6 +13,7 @@ type RealityConfig struct {
 	MinClientVersion  string   `inbound:"min-client-ver,omitempty"`
 	MaxClientVersion  string   `inbound:"max-client-ver,omitempty"`
 	MaxTimeDifference int      `inbound:"max-time-difference,omitempty"`
+	RequireMLKEM      bool     `inbound:"require-mlkem,omitempty"`
 	Mldsa65Seed       string   `inbound:"mldsa65-seed,omitempty"`
 	Show              bool     `inbound:"show,omitempty"`
 	MasterKeyLog      string   `inbound:"master-key-log,omitempty"`
@@ -40,6 +41,7 @@ func (c RealityConfig) Build() reality.Config {
 		MinClientVersion:  c.MinClientVersion,
 		MaxClientVersion:  c.MaxClientVersion,
 		MaxTimeDifference: c.MaxTimeDifference,
+		RequireMLKEM:      c.RequireMLKEM,
 		Mldsa65Seed:       c.Mldsa65Seed,
 		Show:              c.Show,
 		MasterKeyLog:      c.MasterKeyLog,
