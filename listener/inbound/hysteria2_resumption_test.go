@@ -134,18 +134,20 @@ type quicProfileWire struct {
 	// first is the first datagram: its size, and the length of the source
 	// connection ID but for off, quic-go's own.
 	first quicInitial
-	// zeroRTTPackets are the 0-RTT packets of a resumed connection that only
-	// sends the HTTP/3 SETTINGS early. With connection IDs of 3 bytes Firefox
-	// issues the server's NEW_CONNECTION_ID frames in a packet of their own
-	// first, from the limit the ticket restores.
-	zeroRTTPackets int
+	// zeroRTTPackets is the range of 0-RTT packets of a resumed connection
+	// that only sends the HTTP/3 SETTINGS early. A client with a non-empty
+	// source connection ID (quic-go's own, Firefox's 3 bytes) also issues the
+	// server's NEW_CONNECTION_ID frames in 0-RTT, from the limit the ticket
+	// restores; whether they share a packet with the SETTINGS depends on
+	// timing (one packet on macOS, often two on Linux CI).
+	zeroRTTPackets [2]int
 }
 
 var quicProfileWires = map[string]quicProfileWire{
-	"off":     {first: quicInitial{size: 1280, scidLen: -1}, zeroRTTPackets: 1},
-	"chrome":  {first: quicInitial{size: 1250, scidLen: 0}, zeroRTTPackets: 1},
-	"firefox": {first: quicInitial{size: 1252, scidLen: 3}, zeroRTTPackets: 2},
-	"safari":  {first: quicInitial{size: 1200, scidLen: 0}, zeroRTTPackets: 1},
+	"off":     {first: quicInitial{size: 1280, scidLen: -1}, zeroRTTPackets: [2]int{1, 2}},
+	"chrome":  {first: quicInitial{size: 1250, scidLen: 0}, zeroRTTPackets: [2]int{1, 1}},
+	"firefox": {first: quicInitial{size: 1252, scidLen: 3}, zeroRTTPackets: [2]int{1, 2}},
+	"safari":  {first: quicInitial{size: 1200, scidLen: 0}, zeroRTTPackets: [2]int{1, 1}},
 }
 
 // checkQUICProfileInitials checks that every connection the relay saw was made
@@ -445,7 +447,9 @@ func TestHysteria2SessionResumption0RTT(t *testing.T) {
 			require.Zero(t, packets[0])
 			for i := 1; i < 3; i++ {
 				// The control stream with the SETTINGS.
-				require.Equal(t, quicProfileWires[tc.name].zeroRTTPackets, packets[i], "0-RTT packets of connection %d", i)
+				want := quicProfileWires[tc.name].zeroRTTPackets
+				require.GreaterOrEqual(t, packets[i], want[0], "0-RTT packets of connection %d", i)
+				require.LessOrEqual(t, packets[i], want[1], "0-RTT packets of connection %d", i)
 				require.Less(t, sizes[i], 200, "0-RTT bytes of connection %d", i)
 			}
 			t.Logf("0-RTT bytes per connection: %v", sizes)
