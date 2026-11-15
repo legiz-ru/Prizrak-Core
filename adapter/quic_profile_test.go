@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"testing"
@@ -64,6 +65,46 @@ func TestVlessXHTTP3QUICProfile(t *testing.T) {
 				"name": "vless-h3", "type": "vless", "server": "127.0.0.1", "port": port, "uuid": xrayUUID,
 				"network": "xhttp", "xhttp-opts": map[string]any{"path": "/x"},
 				"tls": true, "alpn": []any{"h3"}, "servername": "localhost", "skip-cert-verify": true,
+			}
+			if tc.fingerprint != "" {
+				m["client-fingerprint"] = tc.fingerprint
+			}
+			if tc.disable {
+				m["disable-chrome-parrot"] = true
+			}
+			return m
+		})
+		if size != tc.size || scid != tc.scid {
+			t.Errorf("disable-chrome-parrot %v, %q: size %d, scid %d; want %d, %d", tc.disable, tc.fingerprint, size, scid, tc.size, tc.scid)
+		}
+	}
+}
+
+// xdrive over HTTP/3 dials the storage service with the same handshake: by
+// default the browser's of client-fingerprint, with disable-chrome-parrot
+// quic-go's own.
+func TestVlessXDriveH3QUICProfile(t *testing.T) {
+	for _, tc := range []struct {
+		disable     bool
+		fingerprint string
+		size, scid  int
+	}{
+		{true, "firefox", 1280, 0},
+		{false, "", 1250, 0},
+		{false, "firefox", 1252, 3},
+	} {
+		size, scid := captureFirstInitial(t, func(port int) map[string]any {
+			base := fmt.Sprintf("https://127.0.0.1:%d/{folder}", port)
+			m := map[string]any{
+				"name": "vless-xdrive-h3", "type": "vless", "server": "127.0.0.1", "port": 443, "uuid": xrayUUID,
+				"encryption": xdriveTestEncryption, "network": "xdrive", "alpn": []any{"h3"}, "skip-cert-verify": true,
+				"mux.cool": map[string]any{"enabled": true},
+				"xdrive-opts": map[string]any{"service": "template", "remote-folder": "f", "template": map[string]any{
+					"put":    map[string]any{"method": "PUT", "url": base + "/{name}"},
+					"get":    map[string]any{"method": "GET", "url": base + "/{name}"},
+					"delete": map[string]any{"method": "DELETE", "url": base + "/{name}"},
+					"list":   map[string]any{"method": "GET", "url": base + "?list={prefix}", "namesRegex": `"([^"]+)"`},
+				}},
 			}
 			if tc.fingerprint != "" {
 				m["client-fingerprint"] = tc.fingerprint

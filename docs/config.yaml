@@ -1224,6 +1224,11 @@ proxies: # socks5
     network: xhttp
     alpn: [h3]
     servername: xxx.com
+    # enable-session-resumption: true # Prizrak-Core, default false, as Xray's tlsSettings.enableSessionResumption:
+    #   with alpn: [h3], resume the TLS sessions of the QUIC connections of xhttp (upload and download) and of
+    #   xdrive, the resumed hello being that of the browser of client-fingerprint (Go's with disable-chrome-parrot);
+    #   only the HTTP/3 SETTINGS go in 0-RTT, requests wait for the handshake.
+    #   alpn: [h3] 时复用 TLS 会话（默认关闭），请求等待握手完成
     xhttp-opts:
       path: "/"
     # serverDescription: "..."  # 订阅附带的服务器说明（Remnawave 的 Happ / Xray JSON 订阅），核心不使用，供读取 YAML 的客户端显示 / the server note of a subscription (Remnawave's Happ links and Xray JSON); the core ignores it, apps reading the YAML show it
@@ -1521,6 +1526,13 @@ proxies: # socks5
     #   middle of the SNI, Initials zero-padded to 1252 bytes, 1232 over IPv6; windows 12/24 MiB, idle timeout
     #   30 s); anything else (chrome, empty, ios, random, ...): Chrome, as in Xray.
     #   QUIC 握手模仿的浏览器：firefox 为 Firefox 160，其他值（包括 ios、random）为 Chrome
+    # enable-session-resumption: true # Prizrak-Core, default false, as Xray's tlsSettings.enableSessionResumption:
+    #   keep the server's TLS session tickets and resume the next QUIC connection with one. With the browser
+    #   handshake each ticket is used once and the resumed hello is the browser's (Firefox's GREASE ECH grows with
+    #   the ticket, as NSS's does); with disable-chrome-parrot, Go's. With a ticket that allows it the HTTP/3
+    #   SETTINGS go in 0-RTT; the auth request and the proxied streams wait for the handshake, so nothing a replay
+    #   could repeat is sent early.
+    #   复用 TLS 会话（默认关闭）；0-RTT 只发送 HTTP/3 SETTINGS，认证与代理流等待握手完成
     ###quic-go特殊配置项，不要随意修改除非你知道你在干什么###
     # initial-stream-receive-window： 8388608
     # max-stream-receive-window： 8388608

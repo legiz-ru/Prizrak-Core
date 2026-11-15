@@ -297,6 +297,51 @@ func TestConvertsXrayJSONHysteria2DisableChromeParrot(t *testing.T) {
 	}
 }
 
+// tlsSettings.enableSessionResumption becomes enable-session-resumption where
+// it is read: hysteria and vless xhttp or xdrive over HTTP/3.
+func TestConvertsXrayJSONSessionResumption(t *testing.T) {
+	sub := `[
+{"remarks":"hy","outbounds":[{"tag":"proxy","protocol":"hysteria","settings":{"address":"a.example.com","port":443,"version":2},
+  "streamSettings":{"network":"hysteria","hysteriaSettings":{"version":2,"auth":"pw"},"security":"tls","tlsSettings":{"serverName":"a.example.com","enableSessionResumption":true}}}]},
+{"remarks":"hy-off","outbounds":[{"tag":"proxy","protocol":"hysteria","settings":{"address":"b.example.com","port":443,"version":2},
+  "streamSettings":{"network":"hysteria","hysteriaSettings":{"version":2,"auth":"pw"},"security":"tls","tlsSettings":{"serverName":"b.example.com","enableSessionResumption":false}}}]},
+{"remarks":"xhttp-h3","outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"c.example.com","port":443,"users":[{"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"none"}]}]},
+  "streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/x"},"security":"tls","tlsSettings":{"serverName":"c.example.com","alpn":["h3"],"enableSessionResumption":true}}}]},
+{"remarks":"xhttp-h2","outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"d.example.com","port":443,"users":[{"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"none"}]}]},
+  "streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/x"},"security":"tls","tlsSettings":{"serverName":"d.example.com","alpn":["h2"],"enableSessionResumption":true}}}]},
+{"remarks":"ws","outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"e.example.com","port":443,"users":[{"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"none"}]}]},
+  "streamSettings":{"network":"ws","wsSettings":{"path":"/w"},"security":"tls","tlsSettings":{"serverName":"e.example.com","enableSessionResumption":true}}}]}
+]`
+	proxies, err := ConvertsXrayJSON([]byte(sub))
+	require.NoError(t, err)
+	require.Len(t, proxies, 5)
+	want := map[string]bool{"hy": true, "xhttp-h3": true}
+	for _, p := range proxies {
+		name := p["name"].(string)
+		if want[name] {
+			assert.Equal(t, true, p["enable-session-resumption"], name)
+		} else {
+			assert.NotContains(t, p, "enable-session-resumption", name)
+		}
+		_, err := adapter.ParseProxy(p)
+		require.NoError(t, err, name)
+	}
+
+	// xdrive over HTTP/3 reads it too, over h2 it does not.
+	for alpn, want := range map[string]bool{"h3": true, "h2": false} {
+		xdrive := strings.Replace(xdriveXrayJSON, `"alpn":["h2"]`, `"alpn":["`+alpn+`"],"enableSessionResumption":true`, 1)
+		proxies, err := ConvertsXrayJSON([]byte(xdrive))
+		require.NoError(t, err)
+		if want {
+			assert.Equal(t, true, proxies[0]["enable-session-resumption"], alpn)
+		} else {
+			assert.NotContains(t, proxies[0], "enable-session-resumption", alpn)
+		}
+		_, err = adapter.ParseProxy(proxies[0])
+		require.NoError(t, err, alpn)
+	}
+}
+
 const xdriveXrayJSON = `{"remarks":"XD","outbounds":[
  {"tag":"proxy","protocol":"vless","mux":{"enabled":true,"concurrency":16,"xudpConcurrency":16,"xudpProxyUDP443":"reject"},
   "settings":{"address":"www.google.com","port":443,"id":"b831381d-6324-4d53-ad4f-8cda48b30811","encryption":"mlkem768x25519plus.native.0rtt.gWPtAUIX9CGNQhiWit9Zty9ryz8kQKMiXkzjtC_sxSA"},

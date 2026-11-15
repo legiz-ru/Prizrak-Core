@@ -283,6 +283,9 @@ func convertXrayHysteria2(proxy, settings, stream map[string]any) (map[string]an
 			proxy["client-fingerprint"] = fp
 		}
 		xrayCertChecks(proxy, tls)
+		if enabled, _ := tls["enableSessionResumption"].(bool); enabled {
+			proxy["enable-session-resumption"] = true
+		}
 	}
 	return proxy, nil
 }
@@ -329,6 +332,11 @@ func xrayTLS(proxy, stream map[string]any, protocol string) {
 		if ech := mapString(tls, "echConfigList"); ech != "" {
 			proxy["ech-opts"] = echOptions(ech)
 		}
+		// enable-session-resumption is read by xhttp and xdrive over HTTP/3,
+		// the QUIC transports of vless here.
+		if enabled, _ := tls["enableSessionResumption"].(bool); enabled && protocol == "vless" && xrayHTTP3(stream, tls) {
+			proxy["enable-session-resumption"] = true
+		}
 	case "reality":
 		reality, _ := stream["realitySettings"].(map[string]any)
 		proxy["tls"] = true
@@ -356,6 +364,17 @@ func xrayTLS(proxy, stream map[string]any, protocol string) {
 			proxy["reality-opts"] = realityOpts
 		}
 	}
+}
+
+// xrayHTTP3 reports whether the stream is xhttp or xdrive over HTTP/3.
+func xrayHTTP3(stream, tls map[string]any) bool {
+	switch strings.ToLower(mapString(stream, "network")) {
+	case "xhttp", "splithttp", "xdrive":
+	default:
+		return false
+	}
+	alpn := stringList(tls["alpn"])
+	return len(alpn) == 1 && alpn[0] == "h3"
 }
 
 // xraySecurity reads security as Xray does: xtls is tls, and a missing
