@@ -404,8 +404,8 @@ func (hc *HealthCheck) pingCycle(url string, profile *pingconfig.Profile, rnd *r
 			defer func() { <-sem }()
 			ctx, cancel := context.WithTimeout(hc.ctx, timeout)
 			defer cancel()
+			// URLTest logs the check, the destination's answer included
 			_, _ = proxy.URLTest(ctx, url, expectedStatus)
-			log.Debugln("Ping-config checked, proxy: %s, url: %s, alive: %t, delay: %d ms", proxy.Name(), url, proxy.AliveForTestUrl(url), proxy.LastDelayForTestUrl(url))
 		}()
 	}
 

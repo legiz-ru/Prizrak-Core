@@ -200,14 +200,20 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 	ctx = C.WithHealthCheck(ctx)
 	var satisfied bool
 	profile := pingconfig.Lookup(url)
+	// what a ping-config check found, for its log line
+	var check destinationCheck
 
 	defer func() {
 		alive := err == nil
-		if (!alive || !satisfied) && profile != nil && profile.Connectivity != "" &&
-			!pingconfig.Online(profile.Connectivity, func() error { return directProbe(profile.Connectivity, profile.Timeout) }) {
-			log.Debugln("%s failed %s while the network is down; not recorded", p.Name(), url)
-			return
+		online := false
+		if (!alive || !satisfied) && profile != nil && profile.Connectivity != "" {
+			if !pingconfig.Online(profile.Connectivity, func() error { return directProbe(profile.Connectivity, profile.Timeout) }) {
+				log.Debugln("%s failed %s while the network is down; not recorded", p.Name(), url)
+				return
+			}
+			online = true
 		}
+		passed := alive && satisfied
 		record := C.DelayHistory{Time: time.Now()}
 		if alive {
 			record.Delay = t
@@ -243,6 +249,9 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 			alive, _ = pingconfig.WindowStats(state.history.Copy(), record.Time, profile.Window())
 		}
 		state.alive.Store(alive)
+		if profile != nil {
+			log.Debugln("%s", check.line(p.Name(), url, profile, err, passed, online, alive))
+		}
 	}()
 
 	unifiedDelay := UnifiedDelay.Load()
@@ -300,6 +309,9 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 		}
 	}
 
+	if resp != nil {
+		check.status = resp.StatusCode
+	}
 	satisfied = resp != nil && (expectedStatus == nil || expectedStatus.Check(uint16(resp.StatusCode)))
 	t = uint16(time.Since(start) / time.Millisecond)
 	if t == 0 {
@@ -307,15 +319,88 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 		// that completed in under a millisecond as 1 ms
 		t = 1
 	}
+	check.delay = t
 
 	if satisfied && profile != nil && profile.AsksDestination() {
-		if destErr := p.checkDestination(ctx, profile, url, client, tlsConfig); destErr != nil {
-			log.Debugln("%s failed the ping-config destination of %s: %v", p.Name(), url, destErr)
-			err = destErr
+		check.asked = true
+		destStart := time.Now()
+		check.bytes, check.err = p.checkDestination(ctx, profile, url, client, tlsConfig)
+		check.elapsed = time.Since(destStart)
+		if check.err != nil {
+			err = check.err
 			t = 0
 		}
 	}
 	return
+}
+
+// destinationCheck is what a ping-config check found: the url's answer and
+// delay, and the answer of the profile's destination, which decides alive.
+type destinationCheck struct {
+	delay   uint16 // ms; 0 when the url failed
+	status  int    // the url's status; 0 without an answer
+	asked   bool
+	bytes   int64
+	elapsed time.Duration
+	err     error
+}
+
+// line is the check's debug line: its outcome, the destination's answer
+// that decided it, the url's delay and the node's verdict.
+func (c destinationCheck) line(name, url string, profile *pingconfig.Profile, err error, passed, online, alive bool) string {
+	var b strings.Builder
+	if passed {
+		b.WriteString("Ping-config passed")
+	} else {
+		b.WriteString("Ping-config failed")
+	}
+	fmt.Fprintf(&b, ", proxy: %s, destination: %s, ", name, c.describe(profile))
+	switch {
+	case passed:
+		fmt.Fprintf(&b, "delay: %d ms from url %s", c.delay, url)
+	case c.asked:
+		fmt.Fprintf(&b, "url %s answered in %d ms", url, c.delay)
+	default:
+		fmt.Fprintf(&b, "url %s failed: %s", url, c.urlFailure(err))
+	}
+	if online {
+		b.WriteString(", network is up")
+	}
+	fmt.Fprintf(&b, ", alive: %t", alive)
+	if alive && !passed {
+		b.WriteString(" by the sampling window")
+	}
+	return b.String()
+}
+
+// describe is the destination part of the check's line.
+func (c destinationCheck) describe(profile *pingconfig.Profile) string {
+	if !profile.AsksDestination() {
+		return "the url itself"
+	}
+	ask := profile.Method + " " + profile.Destination
+	switch {
+	case !c.asked:
+		return "not asked"
+	case c.err != nil:
+		return fmt.Sprintf("%s failed after %d ms: %v", ask, c.elapsed.Milliseconds(), c.err)
+	case profile.Method == http.MethodGet:
+		return fmt.Sprintf("%s answered %d bytes in %d ms", ask, c.bytes, c.elapsed.Milliseconds())
+	default:
+		return fmt.Sprintf("%s answered in %d ms", ask, c.elapsed.Milliseconds())
+	}
+}
+
+// urlFailure is why the url itself failed.
+func (c destinationCheck) urlFailure(err error) string {
+	switch {
+	case err != nil:
+		return err.Error()
+	case c.status != 0:
+		return fmt.Sprintf("answered %d", c.status)
+	default:
+		return "no answer"
+	}
 }
 
 // probeClient is the HTTP client of a delay test, over one dialed conn.
@@ -345,60 +430,62 @@ func probeClient(instance net.Conn, tlsConfig *mtls.Config) *http.Client {
 // node, within the profile's timeout. On the address of url it goes over
 // the test's own connection when that still carries a request, else over
 // a new one.
-func (p *Proxy) checkDestination(ctx context.Context, profile *pingconfig.Profile, url string, client *http.Client, tlsConfig *mtls.Config) error {
+// The size of the body read is returned for the log.
+func (p *Proxy) checkDestination(ctx context.Context, profile *pingconfig.Profile, url string, client *http.Client, tlsConfig *mtls.Config) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, profile.Timeout)
 	defer cancel()
 
 	if sameAddress(url, profile.Destination) {
-		answered, err := askDestination(ctx, client, profile)
+		answered, n, err := askDestination(ctx, client, profile)
 		if answered || err == nil || ctx.Err() != nil {
-			return err
+			return n, err
 		}
 		// the connection did not carry another request: a new one
 	}
 
 	addr, err := urlToMetadata(profile.Destination)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	instance, err := p.DialContext(ctx, &addr)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() {
 		_ = instance.Close()
 	}()
 	fresh := probeClient(instance, tlsConfig)
 	defer fresh.CloseIdleConnections()
-	_, err = askDestination(ctx, fresh, profile)
-	return err
+	_, n, err := askDestination(ctx, fresh, profile)
+	return n, err
 }
 
 // askDestination makes the profile's request. answered is true once a
-// response came, so a failure after it is the node's, not the connection's.
-func askDestination(ctx context.Context, client *http.Client, profile *pingconfig.Profile) (answered bool, err error) {
+// response came, so a failure after it is the node's, not the connection's;
+// n is how much of a GET's body was read.
+func askDestination(ctx context.Context, client *http.Client, profile *pingconfig.Profile) (answered bool, n int64, err error) {
 	req, err := http.NewRequestWithContext(ctx, profile.Method, profile.Destination, nil)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return true, fmt.Errorf("destination answered %d", resp.StatusCode)
+		return true, 0, fmt.Errorf("destination answered %d", resp.StatusCode)
 	}
 	if profile.Method == http.MethodGet {
-		n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, pingconfig.MaxBody))
+		n, err = io.Copy(io.Discard, io.LimitReader(resp.Body, pingconfig.MaxBody))
 		if err != nil {
-			return true, fmt.Errorf("destination body after %d bytes: %w", n, err)
+			return true, n, fmt.Errorf("destination body after %d bytes: %w", n, err)
 		}
 		profile.NoteBody(n)
 	}
-	return true, nil
+	return true, n, nil
 }
 
 // sameAddress says whether two urls reach the same scheme, host and port.
