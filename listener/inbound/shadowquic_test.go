@@ -1,3 +1,5 @@
+//go:build !no_shadowquic
+
 package inbound_test
 
 import (

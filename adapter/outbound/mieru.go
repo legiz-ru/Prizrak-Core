@@ -1,3 +1,5 @@
+//go:build !no_mieru
+
 package outbound
 
 import (

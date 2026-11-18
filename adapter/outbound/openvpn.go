@@ -1,3 +1,5 @@
+//go:build !no_openvpn
+
 package outbound
 
 import (

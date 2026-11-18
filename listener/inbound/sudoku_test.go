@@ -1,3 +1,5 @@
+//go:build !no_sudoku
+
 package inbound_test
 
 import (

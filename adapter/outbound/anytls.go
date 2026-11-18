@@ -1,3 +1,5 @@
+//go:build !no_anytls
+
 package outbound
 
 import (

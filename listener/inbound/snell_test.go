@@ -1,3 +1,5 @@
+//go:build !no_snell
+
 package inbound_test
 
 import (

@@ -1,3 +1,5 @@
+//go:build !no_mieru
+
 package inbound_test
 
 import (

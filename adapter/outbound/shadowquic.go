@@ -1,3 +1,5 @@
+//go:build !no_shadowquic
+
 package outbound
 
 import (

@@ -1,3 +1,5 @@
+//go:build !no_masque
+
 package outbound
 
 import (

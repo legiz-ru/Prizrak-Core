@@ -334,10 +334,112 @@ jobs:
           version.txt
           checksums.txt
 
+  # prizrak-kroha: the lighter router build of the same commit (.github/kroha.sh),
+  # a plain and a UPX-packed binary per target, gzipped like the prizrak-core
+  # assets. Its artifacts carry no version.txt: the Docker job reads that file.
+  kroha:
+    name: kroha linux-${{ matrix.target }}
+    # Pinned for its UPX: Ubuntu 24.04 ships UPX 4.2.2.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: amd64 }
+          - { target: arm64, qemu: qemu-aarch64 }
+          - { target: armv7, qemu: qemu-arm }
+          - { target: mips-softfloat, qemu: qemu-mips }
+          - { target: mipsle-softfloat, qemu: qemu-mipsel }
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+      with:
+        go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
+        go-version: '1.26'
+
+    - name: Set variables
+      run: |
+        VERSION="${GITHUB_REF_NAME,,}-smart-$(git rev-parse --short HEAD)"
+        VERSION="${VERSION//\//-}"
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION=${{ github.event.inputs.version }}
+        fi
+        echo "VERSION=${VERSION}" >> $GITHUB_ENV
+        echo "BUILDTIME=$(date)" >> $GITHUB_ENV
+        echo "GOTOOLCHAIN=local" >> $GITHUB_ENV
+
+    - name: Update CA
+      run: |
+        sudo apt-get update && sudo apt-get install ca-certificates
+        sudo update-ca-certificates
+        cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+
+    - name: Install UPX and QEMU
+      run: |
+        sudo apt-get install -y --no-install-recommends upx || sudo apt-get install -y --no-install-recommends upx-ucl
+        sudo apt-get install -y --no-install-recommends qemu-user
+        upx --version | head -n1
+
+    - name: Build kroha
+      env:
+        KROHA_UPX: '1'
+      run: |
+        bash .github/kroha.sh ${{ matrix.target }} "${VERSION}" dist
+        ls -l dist
+
+    # Runs both binaries of the target, the packed one included: there is no
+    # router to try them on, QEMU user mode is the only check they get.
+    - name: Smoke test
+      env:
+        QEMU: ${{ matrix.qemu }}
+      run: |
+        set -euo pipefail
+        cfg=$(mktemp -d)
+        cat > "$cfg/config.yaml" << 'EOF'
+        mixed-port: 7890
+        tun:
+          enable: true
+          stack: mips
+        proxies:
+          - {name: vless, type: vless, server: 127.0.0.1, port: 443, uuid: 00000000-0000-0000-0000-000000000000, network: xhttp, tls: true, servername: example.com, reality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}, client-fingerprint: chrome}
+          - {name: vmess, type: vmess, server: 127.0.0.1, port: 443, uuid: 00000000-0000-0000-0000-000000000000, alterId: 0, cipher: auto}
+        rules:
+          - MATCH,DIRECT
+        EOF
+        cat > "$cfg/disabled.yaml" << 'EOF'
+        proxies:
+          - {name: anytls, type: anytls, server: 127.0.0.1, port: 443}
+        rules:
+          - MATCH,DIRECT
+        EOF
+        run() { if [ -n "$QEMU" ]; then "$QEMU" "$@"; else "$@"; fi; }
+        for f in dist/prizrak-kroha-*.gz; do
+          echo "== $f"
+          bin=$(mktemp)
+          gzip -dc "$f" > "$bin"
+          chmod +x "$bin"
+          out=$(run "$bin" -v)
+          echo "$out"
+          grep -qF -- "${VERSION}-kroha" <<< "$out" || { echo "::error::$f does not report ${VERSION}-kroha"; exit 1; }
+          grep -qF "no_anytls" <<< "$out" || { echo "::error::$f was not built with the kroha tags"; exit 1; }
+          if grep -qF "with_gvisor" <<< "$out"; then echo "::error::$f was built with gVisor"; exit 1; fi
+          run "$bin" -t -d "$(mktemp -d)" -f "$cfg/config.yaml"
+          if run "$bin" -t -d "$(mktemp -d)" -f "$cfg/disabled.yaml"; then echo "::error::$f accepted a protocol kroha leaves out"; exit 1; fi
+        done
+
+    - name: Archive kroha artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: kroha-linux-${{ matrix.target }}
+        path: dist/prizrak-kroha-*.gz
+        if-no-files-found: error
+
   Upload-Prerelease:
     permissions: write-all
     if: ${{ github.event_name != 'workflow_dispatch' && github.ref_type == 'branch' && !startsWith(github.event_name, 'pull_request') }}
-    needs: [build]
+    needs: [build, kroha]
     runs-on: ubuntu-latest
     steps:
     - name: Download all workflow run artifacts
@@ -394,7 +496,7 @@ jobs:
   Upload-Release:
     permissions: write-all
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
-    needs: [build]
+    needs: [build, kroha]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -441,7 +543,42 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R
         working-directory: bin
-  
+
+      - name: Calculate sha256sums
+        run: |
+          cd bin/
+          find . -maxdepth 1 -type f -not -name sha256sums.txt -printf '%P\n' | sort | xargs sha256sum > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Add prizrak-kroha to the release notes
+        run: |
+          set -euo pipefail
+          tags=$(sed -nE 's/^KROHA_TAGS="([^"]+)"/\1/p' .github/kroha.sh)
+          mb() { awk -v b="$(stat -c%s "$1")" 'BEGIN { printf "%.1f", b / 1048576 }'; }
+          {
+            echo ""
+            echo "## prizrak-kroha"
+            echo ""
+            echo "A lighter build of this core for routers with little flash: linux amd64 (v1), arm64, armv7, mips-softfloat and mipsle-softfloat. Each \`.gz\` holds one binary, like the prizrak-core assets: \`prizrak-kroha-linux-<arch>-${CURRENTVERSION}.gz\` is the plain binary, \`prizrak-kroha-linux-<arch>-compressed-${CURRENTVERSION}.gz\` the same binary packed with UPX. \`prizrak-kroha -v\` reports \`${CURRENTVERSION}-kroha\`."
+            echo ""
+            echo "Left out: Tailscale, ZeroTier, EasyTier, gVisor (the TUN stacks \`mips\` and \`system\` stay), OpenVPN, MASQUE, Mieru, Sudoku, TrustTunnel, ShadowQUIC, Snell, ShadowsocksR and AnyTLS; a config that uses one of them fails with a \"disabled by ... build tag\" error. Everything else stays, Smart groups included."
+            echo ""
+            echo "Build tags: \`${tags}\`"
+            echo ""
+            echo "The compressed binaries are tested under QEMU only, not on router hardware. UPX unpacks the whole binary into RAM at every start: on routers with little RAM take the plain one."
+            echo ""
+            echo "| Architecture | Plain | Compressed |"
+            echo "| :--- | ---: | ---: |"
+            for arch in amd64 arm64 armv7 mips-softfloat mipsle-softfloat; do
+              printf '| `%s` | %s MB | %s MB |\n' "$arch" \
+                "$(mb "bin/prizrak-kroha-linux-${arch}-${CURRENTVERSION}.gz")" \
+                "$(mb "bin/prizrak-kroha-linux-${arch}-compressed-${CURRENTVERSION}.gz")"
+            done
+            echo ""
+            echo "Checksums of every asset of this release: \`sha256sums.txt\`."
+          } >> release.md
+          cat release.md
+
       - name: Upload Release
         uses: softprops/action-gh-release@v3
         if: ${{ success() }}

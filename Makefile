@@ -188,6 +188,13 @@ $(gz_releases): %.gz : %
 $(zip_releases): %.zip : %
 	zip -m -j $(BINDIR)/$(NAME)-$(basename $@)-$(VERSION).zip $(BINDIR)/$(NAME)-$(basename $@).exe
 
+# prizrak-kroha, the lighter router build: bin/prizrak-kroha-linux-<target>-<version>.gz
+# and, where upx is installed, the UPX-packed -compressed- variant.
+KROHA_TARGETS = amd64 arm64 armv7 mips-softfloat mipsle-softfloat
+
+kroha:
+	@for t in $(KROHA_TARGETS); do bash .github/kroha.sh $$t $(VERSION) $(BINDIR) || exit 1; done
+
 all-arch: $(PLATFORM_LIST) $(WINDOWS_ARCH_LIST)
 
 releases: $(gz_releases) $(zip_releases)
