@@ -293,7 +293,7 @@ func UConfig(config *tls.Config) *utls.Config {
 			return config.VerifyConnection(tlsConnectionState(state))
 		}
 	}
-	config.EncryptedClientHelloConfigList = cfg.EncryptedClientHelloConfigList
+	cfg.EncryptedClientHelloConfigList = config.EncryptedClientHelloConfigList
 	if config.EncryptedClientHelloRejectionVerify != nil {
 		cfg.EncryptedClientHelloRejectionVerify = func(state utls.ConnectionState) error {
 			return config.EncryptedClientHelloRejectionVerify(tlsConnectionState(state))

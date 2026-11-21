@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 
@@ -63,7 +62,7 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
 		}
 		config.Show = o.Show
 		if o.MasterKeyLog != "" && o.MasterKeyLog != "none" {
-			config.KeyLogWriter, err = os.OpenFile(o.MasterKeyLog, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+			config.KeyLogWriter, err = tlsC.OpenMasterKeyLog(o.MasterKeyLog)
 			if err != nil {
 				return nil, fmt.Errorf("open REALITY master key log: %w", err)
 			}
@@ -75,6 +74,12 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
 }
 
 func parseRealitySpider(value string) (string, [10]int64, error) {
+	const (
+		maxPaddingBytes     = 4096
+		maxParallelRequests = 16
+		maxRequestsPerPath  = 100
+		maxDelayMs          = 60_000
+	)
 	if value == "" {
 		value = "/"
 	}
@@ -87,24 +92,49 @@ func parseRealitySpider(value string) (string, [10]int64, error) {
 	}
 	query := parsed.Query()
 	var ranges [10]int64
-	parseRange := func(name string, index int) {
-		value := query.Get(name)
-		if value == "" {
-			return
+	parseRange := func(name string, index int, maximum int64) error {
+		values, present := query[name]
+		if !present {
+			return nil
 		}
-		parts := strings.Split(value, "-")
-		ranges[index], _ = strconv.ParseInt(parts[0], 10, 64)
-		ranges[index+1] = ranges[index]
-		if len(parts) > 1 {
-			ranges[index+1], _ = strconv.ParseInt(parts[1], 10, 64)
+		if len(values) != 1 || values[0] == "" {
+			return fmt.Errorf("invalid REALITY spider-x %s range", name)
 		}
+		parts := strings.Split(values[0], "-")
+		if len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && parts[1] == "") {
+			return fmt.Errorf("invalid REALITY spider-x %s range", name)
+		}
+		start, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || start < 0 || start > maximum {
+			return fmt.Errorf("invalid REALITY spider-x %s range", name)
+		}
+		end := start
+		if len(parts) == 2 {
+			end, err = strconv.ParseInt(parts[1], 10, 64)
+			if err != nil || end < start || end > maximum {
+				return fmt.Errorf("invalid REALITY spider-x %s range", name)
+			}
+		}
+		ranges[index] = start
+		ranges[index+1] = end
 		query.Del(name)
+		return nil
 	}
-	parseRange("p", 0)
-	parseRange("c", 2)
-	parseRange("t", 4)
-	parseRange("i", 6)
-	parseRange("r", 8)
+	for _, parameter := range []struct {
+		name    string
+		index   int
+		maximum int64
+	}{
+		{name: "p", index: 0, maximum: maxPaddingBytes},
+		{name: "c", index: 2, maximum: maxParallelRequests},
+		{name: "t", index: 4, maximum: maxRequestsPerPath},
+		{name: "i", index: 6, maximum: maxDelayMs},
+		{name: "r", index: 8, maximum: maxDelayMs},
+	} {
+		if err := parseRange(parameter.name, parameter.index, parameter.maximum); err != nil {
+			return "", [10]int64{}, err
+		}
+	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), ranges, nil
 }

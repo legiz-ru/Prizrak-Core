@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -54,6 +55,27 @@ func TestRealityOptionsParseDefaultsSpider(t *testing.T) {
 	}
 }
 
+func TestRealityOptionsParseRejectsInvalidSpiderRanges(t *testing.T) {
+	for _, spider := range []string{
+		"/?p=abc",
+		"/?p=1-2-3",
+		"/?p=-1",
+		"/?p=9223372036854775808",
+		"/?c=100000000000",
+		"/?r=10-1",
+	} {
+		t.Run(spider, func(t *testing.T) {
+			_, err := (RealityOptions{
+				PublicKey: base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+				SpiderX:   spider,
+			}).Parse()
+			if err == nil {
+				t.Fatalf("Parse(%q) error = nil", spider)
+			}
+		})
+	}
+}
+
 func TestRealityOptionsParseRejectsInvalidMldsa65Verify(t *testing.T) {
 	_, err := (RealityOptions{
 		PublicKey:     base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
@@ -90,6 +112,46 @@ func TestRealityOptionsParseOpensMasterKeyLog(t *testing.T) {
 	}
 	if got, want := string(contents), "CLIENT_RANDOM test\n"; got != want {
 		t.Fatalf("key log = %q, want %q", got, want)
+	}
+}
+
+func TestRealityOptionsParseRestrictsMasterKeyLogPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not supported on Windows")
+	}
+	for _, existing := range []bool{false, true} {
+		name := "new file"
+		if existing {
+			name = "existing permissive file"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "reality.keys")
+			if existing {
+				if err := os.WriteFile(path, []byte("old key material\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			config, err := (RealityOptions{
+				PublicKey:    base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+				MasterKeyLog: path,
+			}).Parse()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if closer, ok := config.KeyLogWriter.(io.Closer); ok {
+				defer closer.Close()
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Fatalf("master-key-log mode = %04o, want 0600", got)
+			}
+		})
 	}
 }
 

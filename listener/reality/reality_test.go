@@ -199,6 +199,9 @@ func TestConfigBuildValidatesMldsa65Seed(t *testing.T) {
 }
 
 func TestConfigBuildOpensMasterKeyLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not supported on Windows")
+	}
 	path := filepath.Join(t.TempDir(), "reality.keys")
 	builder, err := validConfig(func(c *Config) { c.MasterKeyLog = path }).Build(nil)
 	if err != nil {
@@ -207,6 +210,13 @@ func TestConfigBuildOpensMasterKeyLog(t *testing.T) {
 	writer := builder.realityConfig.KeyLogWriter
 	if writer == nil {
 		t.Fatal("KeyLogWriter = nil")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("master-key-log mode = %04o, want 0600", got)
 	}
 	if _, err := io.WriteString(writer, "SERVER_HANDSHAKE_TRAFFIC_SECRET test\n"); err != nil {
 		t.Fatal(err)
