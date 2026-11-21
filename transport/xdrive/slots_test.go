@@ -456,10 +456,12 @@ func TestTakeSpareSkipsStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = st1.Close() })
 	st2, err := newLocalStorage(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = st2.Close() })
 	box := client.box
 	box.ch <- spareRing{storage: st1, session: "old", at: time.Now().Add(-time.Hour)}
 	box.ch <- spareRing{storage: st2, session: "new", at: time.Now()}
@@ -477,6 +479,7 @@ func TestDropSpareDeletesSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = st.Close() })
 	name := sessionPrefix("gone") + "/" + uplinkDir + "/s0"
 	if err := st.Put(context.Background(), name, []byte("x")); err != nil {
 		t.Fatal(err)

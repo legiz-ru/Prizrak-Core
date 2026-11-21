@@ -12,6 +12,6 @@ import (
 	"os"
 )
 
-func readFile(_ context.Context, name string) ([]byte, error) {
-	return os.ReadFile(name)
+func readFile(_ context.Context, root *os.Root, name string) ([]byte, error) {
+	return root.ReadFile(name)
 }

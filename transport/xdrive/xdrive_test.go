@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -185,6 +186,7 @@ func TestLocalNameEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLocalStorage: %v", err)
 	}
+	defer storage.Close()
 
 	if err := storage.Put(context.Background(), "../escaped", []byte("x")); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -194,11 +196,47 @@ func TestLocalNameEscape(t *testing.T) {
 	}
 }
 
+func TestLocalStorageRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("outside root"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	storage, err := newLocalStorage(root)
+	if err != nil {
+		t.Fatalf("newLocalStorage: %v", err)
+	}
+	defer storage.Close()
+	data, err := storage.Get(context.Background(), "linked/secret.txt")
+	if err == nil {
+		t.Fatalf("Get followed a symlink outside the storage root and returned %q", data)
+	}
+	if err := storage.Put(context.Background(), "linked/created.txt", []byte("must stay inside")); err == nil {
+		t.Fatal("Put followed a symlink outside the storage root")
+	}
+	if _, err := storage.List(context.Background(), "linked"); err == nil {
+		t.Fatal("List followed a symlink outside the storage root")
+	}
+	if err := storage.Delete(context.Background(), "linked/secret.txt"); err == nil {
+		t.Fatal("Delete followed a symlink outside the storage root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "secret.txt")); err != nil {
+		t.Fatalf("outside file was changed by an escaped operation: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "created.txt")); !os.IsNotExist(err) {
+		t.Fatalf("Put created a file outside the storage root: stat error = %v", err)
+	}
+}
+
 func TestLocalMissingObject(t *testing.T) {
 	storage, err := newLocalStorage(t.TempDir())
 	if err != nil {
 		t.Fatalf("newLocalStorage: %v", err)
 	}
+	defer storage.Close()
 
 	if _, err := storage.Get(context.Background(), "nothing/here"); err != errNotFound {
 		t.Fatalf("Get returned %v, want errNotFound", err)
@@ -285,14 +323,18 @@ func newTestListener(t *testing.T, folder string) *Listener {
 	if err != nil {
 		t.Fatalf("newLocalStorage: %v", err)
 	}
-	return &Listener{
-		ctx:       context.Background(),
+	ctx, cancel := context.WithCancel(context.Background())
+	listener := &Listener{
+		ctx:       ctx,
+		cancel:    cancel,
 		storage:   storage,
 		params:    paramsFromConfig(&Config{SessionTtlSeconds: 1}),
 		active:    make(map[string]bool),
 		handled:   make(map[string]time.Time),
 		idleSince: make(map[string]time.Time),
 	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
 }
 
 func TestCollectAbandoned(t *testing.T) {
@@ -444,6 +486,7 @@ func TestMissingSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLocalStorage: %v", err)
 	}
+	defer storage.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -474,6 +517,7 @@ func TestIdleStreamWaits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLocalStorage: %v", err)
 	}
+	defer storage.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -504,6 +548,7 @@ func TestFailureMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLocalStorage: %v", err)
 	}
+	defer storage.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -564,6 +609,7 @@ func TestInlinePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLocalStorage: %v", err)
 	}
+	defer base.Close()
 	storage := &inlineOnlyStorage{Storage: base}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -594,6 +640,7 @@ func TestLocalSessionStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLocalStorage: %v", err)
 	}
+	defer storage.Close()
 	if sessionStorage(storage) != Storage(storage) {
 		t.Fatal("a session of local storage got a storage of its own")
 	}
