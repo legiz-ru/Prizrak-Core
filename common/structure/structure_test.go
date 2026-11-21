@@ -87,6 +87,21 @@ func TestStructure_MissingKey(t *testing.T) {
 	assert.NotNilf(t, err, "should throw error: %#v", s)
 }
 
+func TestStructure_MissingKeyPreservesPercentVerbs(t *testing.T) {
+	type PercentField struct {
+		Value string `test:"rate%field"`
+	}
+	decoder := NewDecoder(Option{TagName: "test"})
+	err := decoder.Decode(map[string]any{}, &PercentField{})
+	if err == nil {
+		t.Fatal("Decode() returned nil for a missing required field")
+	}
+	const want = "'' has unset fields: rate%field"
+	if err.Error() != want {
+		t.Fatalf("Decode() error = %q, want %q", err, want)
+	}
+}
+
 func TestStructure_ParamError(t *testing.T) {
 	rawMap := map[string]any{}
 	s := Baz{}
