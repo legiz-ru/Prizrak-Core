@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/metacubex/mihomo/component/profile/cachefile"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/stretchr/testify/assert"
@@ -14,14 +15,20 @@ import (
 // A proxy-provider with fallback-urls reads the subscription, and its
 // subscription-userinfo, from the first address that answers.
 func TestParseProxyProviderFallbackURLs(t *testing.T) {
+	C.SetHomeDir(t.TempDir())
+	t.Cleanup(func() {
+		if err := cachefile.Cache().Close(); err != nil {
+			t.Errorf("close cache file: %v", err)
+		}
+	})
+
 	// A single fallback address may also be written as a plain string.
 	for _, form := range []string{"list", "string"} {
-		t.Run(form, func(t *testing.T) { testParseProxyProviderFallbackURLs(t, form == "string") })
+		t.Run(form, func(t *testing.T) { testParseProxyProviderFallbackURLs(t, form == "string", "sub-"+form) })
 	}
 }
 
-func testParseProxyProviderFallbackURLs(t *testing.T, asString bool) {
-	C.SetHomeDir(t.TempDir())
+func testParseProxyProviderFallbackURLs(t *testing.T, asString bool, name string) {
 	main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("subscription-userinfo", "upload=1; download=1; total=1; expire=1")
 		w.WriteHeader(502)
@@ -37,11 +44,11 @@ func testParseProxyProviderFallbackURLs(t *testing.T, asString bool) {
 	if asString {
 		fallbackURLs = backup.URL + "/sub?token=x"
 	}
-	p, err := ParseProxyProvider("sub", map[string]any{
+	p, err := ParseProxyProvider(name, map[string]any{
 		"type":          "http",
 		"url":           main.URL + "/sub?token=x",
 		"fallback-urls": fallbackURLs,
-		"path":          "./proxies/sub.yaml",
+		"path":          "./proxies/" + name + ".yaml",
 	}, nil)
 	require.NoError(t, err)
 	defer p.(*ProxySetProvider).Close()
