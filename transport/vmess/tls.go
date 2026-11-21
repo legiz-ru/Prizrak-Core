@@ -3,6 +3,7 @@ package vmess
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 
 	"github.com/metacubex/mihomo/component/ca"
@@ -115,7 +116,11 @@ func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn
 	if cfg.Reality != nil && clientFingerprintName == "" {
 		clientFingerprintName = "chrome"
 	}
-	if clientFingerprint, ok := tlsC.GetFingerprint(clientFingerprintName); ok {
+	clientFingerprint, hasFingerprint := tlsC.GetFingerprint(clientFingerprintName)
+	if !hasFingerprint && clientFingerprintName != "" && clientFingerprintName != "none" {
+		return nil, fmt.Errorf("unsupported client-fingerprint %q", clientFingerprintName)
+	}
+	if hasFingerprint {
 		if cfg.Reality != nil {
 			return tlsC.GetRealityConn(ctx, conn, clientFingerprint, tlsConfig.ServerName, cfg.Reality)
 		}

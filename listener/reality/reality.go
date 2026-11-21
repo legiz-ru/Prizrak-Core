@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
+	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener/inner"
 	"github.com/metacubex/mihomo/log"
@@ -146,7 +146,7 @@ func (c Config) Build(tunnel C.Tunnel) (*Builder, error) {
 		}
 	}
 	if c.MasterKeyLog != "" && c.MasterKeyLog != "none" {
-		realityConfig.KeyLogWriter, err = os.OpenFile(c.MasterKeyLog, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+		realityConfig.KeyLogWriter, err = tlsC.OpenMasterKeyLog(c.MasterKeyLog)
 		if err != nil {
 			return nil, fmt.Errorf("open REALITY master key log: %w", err)
 		}

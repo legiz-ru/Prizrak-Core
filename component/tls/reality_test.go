@@ -82,6 +82,37 @@ func TestRealityDiscoverPathsMatchesXraySpider(t *testing.T) {
 	}
 }
 
+func TestRealityFallbackResponseBodyIsBounded(t *testing.T) {
+	reader := &unboundedTestReader{}
+	if _, err := readRealityFallbackBody(reader); err == nil {
+		t.Fatal("oversized fallback response was accepted")
+	}
+	if got, want := reader.read, int64(maxRealityFallbackResponseBytes+1); got != want {
+		t.Fatalf("bytes read = %d, want bounded read of %d", got, want)
+	}
+
+	const small = "local fallback response"
+	got, err := readRealityFallbackBody(strings.NewReader(small))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != small {
+		t.Fatalf("body = %q, want %q", got, small)
+	}
+}
+
+type unboundedTestReader struct {
+	read int64
+}
+
+func (r *unboundedTestReader) Read(p []byte) (int, error) {
+	for index := range p {
+		p[index] = 'x'
+	}
+	r.read += int64(len(p))
+	return len(p), nil
+}
+
 func TestRealityRandBetweenMatchesXrayBounds(t *testing.T) {
 	if got := realityRandBetween(7, 7); got != 7 {
 		t.Fatalf("equal bounds result = %d, want 7", got)

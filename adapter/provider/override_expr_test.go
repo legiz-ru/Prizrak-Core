@@ -486,3 +486,9 @@ func TestOverrideExprErrors(t *testing.T) {
 		require.ErrorContains(t, err, "cannot exceed 10 million")
 	})
 }
+
+func TestOverrideExprExpectPreservesPercentInMessage(t *testing.T) {
+	parser := overrideExprParser{tokens: []overrideToken{{kind: overrideTokenEOF, pos: 7}}}
+	_, err := parser.expect(overrideTokenIdentifier, "expected 100%")
+	require.EqualError(t, err, "column 8: expected 100%")
+}

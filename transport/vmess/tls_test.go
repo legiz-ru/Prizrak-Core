@@ -72,3 +72,18 @@ func TestStreamTLSConnRejectsExplicitNoneRealityFingerprint(t *testing.T) {
 		t.Fatalf("explicit none error = %v, want client-fingerprint error", err)
 	}
 }
+
+func TestStreamTLSConnRejectsUnknownFingerprintBeforeTLSFallback(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	_ = client.SetDeadline(time.Now().Add(250 * time.Millisecond))
+
+	_, err := StreamTLSConn(context.Background(), client, &TLSConfig{
+		Host:              "example.com",
+		ClientFingerprint: "chrom",
+	})
+	if err == nil || !strings.Contains(err.Error(), "client-fingerprint") {
+		t.Fatalf("unknown fingerprint error = %v, want explicit client-fingerprint error", err)
+	}
+}

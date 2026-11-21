@@ -7,9 +7,10 @@ package xdrive
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 )
 
@@ -37,25 +38,72 @@ func (s *localStorage) resolve(name string) (string, error) {
 	if strings.HasPrefix(path.Base(clean), tempPrefix) {
 		return "", newError("reserved object name: ", name)
 	}
-	return filepath.Join(s.root, filepath.FromSlash(clean[1:])), nil
+	return clean[1:], nil
+}
+
+func (s *localStorage) openParent(root *os.Root, name string) (*os.Root, string, error) {
+	parts := strings.Split(name, "/")
+	leaf := parts[len(parts)-1]
+	parent := root
+	var owned *os.Root
+	for _, part := range parts[:len(parts)-1] {
+		next, err := parent.OpenRoot(part)
+		if err != nil {
+			if owned != nil {
+				_ = owned.Close()
+			}
+			return nil, "", err
+		}
+		if owned != nil {
+			_ = owned.Close()
+		}
+		owned = next
+		parent = next
+	}
+	if owned == nil {
+		var err error
+		owned, err = root.OpenRoot(".")
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return owned, leaf, nil
 }
 
 func (s *localStorage) Put(ctx context.Context, name string, data []byte) error {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return newError("failed to open remote folder").Base(err)
+	}
+	defer root.Close()
 	full, err := s.resolve(name)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(full)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return newError("failed to create folder ", dir).Base(err)
+	dir := path.Dir(full)
+	if dir != "." {
+		if err := root.MkdirAll(dir, 0o700); err != nil {
+			return newError("failed to create folder ", dir).Base(err)
+		}
 	}
 
-	tmp, err := os.CreateTemp(dir, tempPrefix+"*")
+	var tmp *os.File
+	var tmpName string
+	for attempt := 0; attempt < 10; attempt++ {
+		suffix := make([]byte, 12)
+		if _, err := rand.Read(suffix); err != nil {
+			return newError("failed to create temp file name in ", dir).Base(err)
+		}
+		tmpName = path.Join(dir, tempPrefix+hex.EncodeToString(suffix))
+		tmp, err = root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if !os.IsExist(err) {
+			break
+		}
+	}
 	if err != nil {
 		return newError("failed to create temp file in ", dir).Base(err)
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer root.Remove(tmpName)
 
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
@@ -64,18 +112,23 @@ func (s *localStorage) Put(ctx context.Context, name string, data []byte) error 
 	if err := tmp.Close(); err != nil {
 		return newError("failed to close ", name).Base(err)
 	}
-	if err := os.Rename(tmpName, full); err != nil {
+	if err := root.Rename(tmpName, full); err != nil {
 		return newError("failed to commit ", name).Base(err)
 	}
 	return nil
 }
 
 func (s *localStorage) Get(ctx context.Context, name string) ([]byte, error) {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return nil, newError("failed to open remote folder").Base(err)
+	}
+	defer root.Close()
 	full, err := s.resolve(name)
 	if err != nil {
 		return nil, err
 	}
-	data, err := readFile(ctx, full)
+	data, err := readFile(ctx, root, full)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, errNotFound
@@ -86,22 +139,45 @@ func (s *localStorage) Get(ctx context.Context, name string) ([]byte, error) {
 }
 
 func (s *localStorage) Delete(ctx context.Context, name string) error {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return newError("failed to open remote folder").Base(err)
+	}
+	defer root.Close()
 	full, err := s.resolve(name)
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(full); err != nil {
+	parent, leaf, err := s.openParent(root, full)
+	if err != nil {
+		return newError("failed to resolve parent folder for ", name).Base(err)
+	}
+	defer parent.Close()
+	if err := parent.RemoveAll(leaf); err != nil {
 		return newError("failed to delete ", name).Base(err)
 	}
 	return nil
 }
 
 func (s *localStorage) List(ctx context.Context, prefix string) ([]Entry, error) {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return nil, newError("failed to open remote folder").Base(err)
+	}
+	defer root.Close()
 	full, err := s.resolve(prefix)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(full)
+	dir, err := root.Open(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, newError("failed to list ", prefix).Base(err)
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

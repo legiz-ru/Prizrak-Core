@@ -30,6 +30,11 @@ import (
 )
 
 const (
+	maxRealityFallbackResponseBytes = 1 << 20
+	realityFallbackTimeout          = 15 * time.Second
+)
+
+const (
 	RealityMaxShortIDLen = 8
 
 	// The REALITY protocol uses Xray-style release bytes as a compatibility
@@ -156,6 +161,7 @@ func realityClientFallback(uConn net.Conn, serverName string, fingerprint utls.C
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
 	client := http.Client{
+		Timeout: realityFallbackTimeout,
 		Transport: &http.Transport{
 			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return uConn, nil
@@ -201,7 +207,7 @@ func realityClientFallback(uConn net.Conn, serverName string, fingerprint utls.C
 			if err != nil {
 				return
 			}
-			body, readErr := io.ReadAll(response.Body)
+			body, readErr := readRealityFallbackBody(response.Body)
 			_ = response.Body.Close()
 			if readErr != nil {
 				return
@@ -221,6 +227,17 @@ func realityClientFallback(uConn net.Conn, serverName string, fingerprint utls.C
 	for i := int64(0); i < realityRandBetween(spiderY[2], spiderY[3]); i++ {
 		go get(false)
 	}
+}
+
+func readRealityFallbackBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxRealityFallbackResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxRealityFallbackResponseBytes {
+		return nil, errors.New("REALITY fallback response exceeds size limit")
+	}
+	return data, nil
 }
 
 var realityHref = regexp.MustCompile(`href="([/h].*?)"`)

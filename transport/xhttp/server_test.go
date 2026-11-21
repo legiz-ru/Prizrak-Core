@@ -178,3 +178,89 @@ func TestUplinkDefaultsMatchXray(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1000000, r.Max)
 }
+
+func TestServerHandlerDoesNotCreateSessionForRejectedRequest(t *testing.T) {
+	config := Config{
+		Path:             "/xhttp",
+		Mode:             "stream-one",
+		SessionPlacement: PlacementQuery,
+		SeqPlacement:     PlacementQuery,
+	}
+	handler, err := NewServerHandler(ServerOption{
+		Config:      config,
+		ConnHandler: func(conn net.Conn) { _ = conn.Close() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://example.com/xhttp", nil)
+	if err := config.FillDownloadRequest(request, "rejected-probe"); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if got := recorder.Result().StatusCode; got != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", got, http.StatusNotFound)
+	}
+	requestHandler := handler.(*requestHandler)
+	requestHandler.mu.Lock()
+	defer requestHandler.mu.Unlock()
+	if got := len(requestHandler.sessions); got != 0 {
+		t.Fatalf("rejected request created %d session(s), want none", got)
+	}
+}
+
+func TestServerHandlerCapsActiveSessionsAndStopsReapersOnDelete(t *testing.T) {
+	config := Config{Path: "/xhttp", Mode: "packet-up"}
+	handler, err := NewServerHandler(ServerOption{Config: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestHandler := handler.(*requestHandler)
+	requestHandler.maxSessions = 2
+	for _, sessionID := range []string{"first", "second"} {
+		if requestHandler.upsertSession(sessionID) == nil {
+			t.Fatalf("upsertSession(%q) unexpectedly hit the cap", sessionID)
+		}
+	}
+	if requestHandler.upsertSession("third") != nil {
+		t.Fatal("upsertSession created a session after reaching the cap")
+	}
+	requestHandler.deleteSession("first")
+	if requestHandler.upsertSession("third") == nil {
+		t.Fatal("upsertSession did not reuse capacity after deletion")
+	}
+	requestHandler.deleteSession("second")
+	requestHandler.deleteSession("third")
+}
+
+func TestServerHandlerDoesNotRouteNeighboringPathAsXHTTP(t *testing.T) {
+	config := Config{
+		Path:             "/xhttp",
+		Mode:             "stream-one",
+		SessionPlacement: PlacementQuery,
+		SeqPlacement:     PlacementQuery,
+	}
+	fallbackCalled := false
+	handler, err := NewServerHandler(ServerOption{
+		Config: config,
+		ConnHandler: func(conn net.Conn) {
+			_ = conn.Close()
+		},
+		HttpHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fallbackCalled = true
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/xhttp-other", nil))
+	if !fallbackCalled {
+		t.Fatal("neighboring path was handled as XHTTP instead of by the HTTP fallback")
+	}
+	if got := recorder.Result().StatusCode; got != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", got, http.StatusNoContent)
+	}
+}
