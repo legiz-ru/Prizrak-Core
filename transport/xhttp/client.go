@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/common/contextutils"
@@ -52,11 +53,17 @@ type PacketUpWriter struct {
 	buf                  []byte
 	timer                *time.Timer
 	flushErr             error
+	closed               atomic.Bool
+	closeOnce            sync.Once
+	closeErr             error
 }
 
 func (c *PacketUpWriter) Write(b []byte) (int, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if c.closed.Load() {
+		return 0, io.ErrClosedPipe
+	}
 
 	if err := c.flushErr; err != nil {
 		return 0, err
@@ -72,6 +79,9 @@ func (c *PacketUpWriter) Write(b []byte) (int, error) {
 
 		if len(c.buf) >= c.scMaxEachPostBytes { // too much data in buffer, wait the flush complete
 			c.writeCond.Wait()
+			if c.closed.Load() {
+				return len(b) - data.Len(), io.ErrClosedPipe
+			}
 			if err := c.flushErr; err != nil {
 				return 0, err
 			}
@@ -141,18 +151,36 @@ func (c *PacketUpWriter) write(b []byte) (int, error) {
 }
 
 func (c *PacketUpWriter) Close() error {
-	ch := make(chan struct{})
-	go func() { // flush in the background
-		defer close(ch)
-		c.flush()
-	}()
-	select {
-	case <-ch:
-	case <-time.After(time.Second):
-	}
-	c.cancel()
-	httputils.CloseTransport(c.transport)
-	return nil
+	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+
+		flushed := make(chan struct{})
+		go func() {
+			c.flush()
+			close(flushed)
+		}()
+
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-flushed:
+			c.writeMu.Lock()
+			c.closeErr = c.flushErr
+			c.writeMu.Unlock()
+		case <-timer.C:
+			c.closeErr = errors.New("xhttp packet-up flush timed out")
+			c.cancel()
+			httputils.CloseTransport(c.transport)
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		c.cancel()
+		httputils.CloseTransport(c.transport)
+	})
+	return c.closeErr
 }
 
 // NewTransport builds the XHTTP round tripper. h2Flow is the xhttp-opts

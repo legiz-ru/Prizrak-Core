@@ -33,6 +33,11 @@ type ServerOption struct {
 // maxMuxKeepAlivePadding keeps a KeepAlive frame and its padding small.
 const maxMuxKeepAlivePadding = 1024
 
+const (
+	maxActiveSessions = 1024
+	maxSessionIDBytes = 256
+)
+
 type httpServerConn struct {
 	mu      sync.Mutex
 	w       http.ResponseWriter
@@ -117,8 +122,9 @@ type requestHandler struct {
 	muxKeepAlive         Range
 	muxKeepAliveBytes    Range
 
-	mu       sync.Mutex
-	sessions map[string]*httpSession
+	mu          sync.Mutex
+	sessions    map[string]*httpSession
+	maxSessions int
 }
 
 func NewServerHandler(opt ServerOption) (http.Handler, error) {
@@ -172,6 +178,7 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 		scStreamUpServerSecs: scStreamUpServerSecs,
 		scMaxBufferedPosts:   scMaxBufferedPosts,
 		sessions:             map[string]*httpSession{},
+		maxSessions:          maxActiveSessions,
 	}, nil
 }
 
@@ -182,6 +189,9 @@ func (h *requestHandler) upsertSession(sessionID string) *httpSession {
 	s, ok := h.sessions[sessionID]
 	if ok {
 		return s
+	}
+	if len(h.sessions) >= h.maxSessions {
+		return nil
 	}
 
 	s = newHTTPSession(h.scMaxBufferedPosts.Max)
@@ -207,9 +217,20 @@ func (h *requestHandler) deleteSession(sessionID string) {
 	defer h.mu.Unlock()
 
 	if s, ok := h.sessions[sessionID]; ok {
+		s.markConnected()
 		_ = s.uploadQueue.Close()
 		delete(h.sessions, sessionID)
 	}
+}
+
+func matchesPath(path, prefix string) bool {
+	if prefix == "/" {
+		return strings.HasPrefix(path, "/")
+	}
+	if strings.HasSuffix(prefix, "/") {
+		return strings.HasPrefix(path, prefix)
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 func (h *requestHandler) getSession(sessionID string) *httpSession {
@@ -263,7 +284,7 @@ func (h *requestHandler) allowPacketUpUpload() bool {
 
 func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := h.config.NormalizedPath()
-	if h.httpHandler != nil && !strings.HasPrefix(r.URL.Path, path) {
+	if h.httpHandler != nil && !matchesPath(r.URL.Path, path) {
 		h.httpHandler.ServeHTTP(w, r)
 		return
 	}
@@ -273,7 +294,7 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !strings.HasPrefix(r.URL.Path, path) {
+	if !matchesPath(r.URL.Path, path) {
 		http.NotFound(w, r)
 		return
 	}
@@ -312,14 +333,18 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	obfsPaddingAccepted := h.config.XPaddingObfsMode && paddingValue != ""
 	sessionId, seqStr := h.config.ExtractMetaFromRequest(r, path)
-
-	var currentSession *httpSession
-	if sessionId != "" {
-		currentSession = h.upsertSession(sessionId)
+	if len(sessionId) > maxSessionIDBytes {
+		http.Error(w, "xhttp session id too long", http.StatusBadRequest)
+		return
 	}
 
 	// stream-up upload: POST /path/{session}
 	if r.Method != http.MethodGet && sessionId != "" && seqStr == "" && h.allowStreamUpUpload() {
+		currentSession := h.upsertSession(sessionId)
+		if currentSession == nil {
+			http.Error(w, "too many xhttp sessions", http.StatusServiceUnavailable)
+			return
+		}
 		httpSC := newHTTPServerConn(w, r.Body)
 		err := currentSession.uploadQueue.Push(Packet{
 			Reader: httpSC,
@@ -449,6 +474,18 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid xhttp seq", http.StatusBadRequest)
 			return
 		}
+		currentSession := h.getSession(sessionId)
+		if currentSession == nil {
+			if seq != 0 {
+				http.Error(w, "invalid first xhttp seq", http.StatusConflict)
+				return
+			}
+			currentSession = h.upsertSession(sessionId)
+			if currentSession == nil {
+				http.Error(w, "too many xhttp sessions", http.StatusServiceUnavailable)
+				return
+			}
+		}
 
 		err = currentSession.uploadQueue.Push(Packet{
 			Seq:     seq,
@@ -469,6 +506,11 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// stream-up/packet-up download: GET /path/{session}
 	if r.Method == http.MethodGet && sessionId != "" && seqStr == "" && h.allowSessionDownload() {
+		currentSession := h.upsertSession(sessionId)
+		if currentSession == nil {
+			http.Error(w, "too many xhttp sessions", http.StatusServiceUnavailable)
+			return
+		}
 		currentSession.markConnected()
 
 		// magic header instructs nginx + apache to not buffer response body
