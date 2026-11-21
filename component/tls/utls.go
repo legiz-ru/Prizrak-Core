@@ -191,10 +191,27 @@ type ConnectionState = utls.ConnectionState
 
 type Config = utls.Config
 
-var tlsCertificateRequestInfoCtxOffset = utils.MustOK(reflect.TypeOf((*tls.CertificateRequestInfo)(nil)).Elem().FieldByName("ctx")).Offset
-var tlsClientHelloInfoCtxOffset = utils.MustOK(reflect.TypeOf((*tls.ClientHelloInfo)(nil)).Elem().FieldByName("ctx")).Offset
-var tlsConnectionStateEkmOffset = utils.MustOK(reflect.TypeOf((*tls.ConnectionState)(nil)).Elem().FieldByName("ekm")).Offset
-var utlsConnectionStateEkmOffset = utils.MustOK(reflect.TypeOf((*utls.ConnectionState)(nil)).Elem().FieldByName("ekm")).Offset
+var contextInterfaceType = reflect.TypeOf((*context.Context)(nil)).Elem()
+var exportKeyingMaterialType = reflect.TypeOf((func(string, []byte, int) ([]byte, error))(nil))
+
+func mustUnsafeFieldOffset(owner reflect.Type, fieldName string, expectedType reflect.Type) uintptr {
+	field, ok := owner.FieldByName(fieldName)
+	if !ok {
+		panic("incompatible TLS private field: " + owner.String() + "." + fieldName + " is missing")
+	}
+	if field.Type != expectedType {
+		panic("incompatible TLS private field: " + owner.String() + "." + fieldName + " has type " + field.Type.String() + ", want " + expectedType.String())
+	}
+	if field.Offset > owner.Size() || field.Type.Size() > owner.Size()-field.Offset {
+		panic("incompatible TLS private field: " + owner.String() + "." + fieldName + " lies outside its struct")
+	}
+	return field.Offset
+}
+
+var tlsCertificateRequestInfoCtxOffset = mustUnsafeFieldOffset(reflect.TypeOf(tls.CertificateRequestInfo{}), "ctx", contextInterfaceType)
+var tlsClientHelloInfoCtxOffset = mustUnsafeFieldOffset(reflect.TypeOf(tls.ClientHelloInfo{}), "ctx", contextInterfaceType)
+var tlsConnectionStateEkmOffset = mustUnsafeFieldOffset(reflect.TypeOf(tls.ConnectionState{}), "ekm", exportKeyingMaterialType)
+var utlsConnectionStateEkmOffset = mustUnsafeFieldOffset(reflect.TypeOf(utls.ConnectionState{}), "ekm", exportKeyingMaterialType)
 
 func tlsConnectionState(state utls.ConnectionState) (tlsState tls.ConnectionState) {
 	tlsState = tls.ConnectionState{
